@@ -1,0 +1,21 @@
+[market]
+name = "HK"
+timezone = "Asia/Hong_Kong"
+sessions = ["09:30-12:00", "13:00-16:00"]
+order_valid_time = 5          # minutes
+refresh_buffer = 15           # seconds
+full_batch_interval = 10      # minutes between full batch updates
+min_dispatch_interval = 5     # seconds between any two dispatches
+
+[market_settings]
+single_name_cap = 50000       # default max qty per stock
+max_buy_notional = 10000000   # global buy side notional limit
+max_sell_notional = 10000000  # global sell side notional limit
+max_staleness = 30            # seconds before heartbeat alert
+min_risk_updates_after_fill = 2  # risk pushes before refill eligible
+
+[overrides.stocks."0005.HK"]
+single_name_cap = 100000      # HSBC gets higher cap
+
+[overrides.stocks."0700.HK"]
+single_name_cap = 20000       # Tencent gets lower cap

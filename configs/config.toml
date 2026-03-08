@@ -1,0 +1,18 @@
+[HK]
+timezone = "Asia/Hong_Kong"
+universe_file = "configs/hk_universe.csv"
+sessions = ["09:30-12:00", "13:00-16:00"]
+order_valid_time = 5          # minutes
+refresh_buffer = 15           # seconds
+full_batch_interval = 10      # minutes between full batch updates
+min_dispatch_interval = 5     # seconds between any two dispatches
+single_name_cap = 50000
+max_buy_notional = 10000000   # USD
+max_sell_notional = 10000000  # USD
+max_staleness = 30            # seconds
+partial_change_threshold = 0.10   # 10% change required for partial update
+refill_fill_threshold = 0.50      # 50% filled to trigger refill
+
+[overrides.stock_limit.HK]
+"0005.HK" = 100000      # HSBC gets higher limit
+"0700.HK" = 20000       # Tencent gets lower limit
