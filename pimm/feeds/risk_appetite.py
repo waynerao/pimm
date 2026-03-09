@@ -9,8 +9,5 @@ class RiskAppetiteFeed(FeedAdapter):
         super().__init__(event_type="risk_appetite", engine_push=engine_push)
 
     def _subscribe(self):
-        # TODO: Wire to desktool.subscribe_risk_appetite(callback=self._push)
+        # TODO: desktool.subscribe(self._data_queue, feed_type="risk_appetite", ...)
         pass
-
-    def on_update(self, df):
-        self._push(df)

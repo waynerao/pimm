@@ -9,8 +9,5 @@ class FillsFeed(FeedAdapter):
         super().__init__(event_type="fills", engine_push=engine_push)
 
     def _subscribe(self):
-        # TODO: Wire to desktool.subscribe_fills(callback=self._push)
+        # TODO: desktool.subscribe(self._data_queue, feed_type="fills", ...)
         pass
-
-    def on_update(self, df):
-        self._push(df)

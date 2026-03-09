@@ -12,11 +12,8 @@ class AlphaFeed(FeedAdapter):
         self._rics = rics or []
 
     def _subscribe(self):
-        # TODO: Wire to alphaflow.subscribe(callback=self._push)
+        # TODO: alphaflow.subscribe(self._data_queue, ...)
         # Push zero-alpha stub on startup
         if self._rics:
             stub = pd.DataFrame({"ric": self._rics, "alpha": [0.0] * len(self._rics)})
             self._push(stub)
-
-    def on_update(self, df):
-        self._push(df)

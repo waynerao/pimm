@@ -1,6 +1,7 @@
 # Base adapter: thread-to-asyncio bridge for feed subscriptions
 
 import logging
+import queue
 import threading
 
 logger = logging.getLogger(__name__)
@@ -8,7 +9,11 @@ logger = logging.getLogger(__name__)
 
 class FeedAdapter:
     # Base class for threaded feed adapters.
-    # Subclasses implement _subscribe() and call _push(data) to send updates.
+    #
+    # Production: subclass overrides _subscribe() to call desktool.subscribe()
+    # with self._data_queue, then _run() polls the queue automatically.
+    #
+    # Simulator: call on_update(df) directly from sim threads (bypasses queue).
 
     def __init__(self, event_type, engine_push):
         self._event_type = event_type
@@ -16,9 +21,9 @@ class FeedAdapter:
         self._thread = None
         self._running = False
         self._loop = None
+        self._data_queue = queue.Queue()
 
     def start(self, loop):
-        # Start the feed subscription in a background thread
         self._running = True
         self._loop = loop
         self._thread = threading.Thread(
@@ -37,15 +42,26 @@ class FeedAdapter:
         try:
             self._subscribe()
         except Exception:
-            logger.exception("Feed %s failed", self._event_type)
+            logger.exception("Feed %s subscribe failed", self._event_type)
+            return
+
+        while self._running:
+            try:
+                df = self._data_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            self._push(df)
 
     def _push(self, data):
-        # Push data to the engine event queue (thread-safe)
         if self._running:
             self._loop.call_soon_threadsafe(
                 self._engine_push, self._event_type, data
             )
 
+    def on_update(self, df):
+        # Direct push for simulator use (bypasses _data_queue)
+        self._push(df)
+
     def _subscribe(self):
-        # Override in subclasses
-        raise NotImplementedError
+        # Override in subclasses to call desktool.subscribe(self._data_queue, ...)
+        pass
