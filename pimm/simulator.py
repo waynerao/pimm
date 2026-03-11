@@ -1,9 +1,8 @@
 # Simulation harness for end-to-end testing without desktool/alphaflow
 #
 # Usage:
-#   uv run python -m pimm.simulator configs/config.toml --market HK
-#   uv run python -m pimm.simulator configs/config.toml --market HK --gui
-#   uv run python -m pimm.simulator configs/config.toml --market HK --seed 42
+#   uv run python -m pimm.simulator configs/config.cfg
+#   uv run python -m pimm.simulator configs/config.cfg --seed 42
 
 import argparse
 import asyncio
@@ -18,8 +17,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from configs.config import SessionWindow, load_config, load_universe
-from pimm.engine.loop import TradingEngine
+from pimm.config import SessionWindow, load_all_markets, load_universe
+from pimm.engine.loop import MarketState, TradingEngine
 from pimm.engine.state import StateManager
 from pimm.feeds.alpha import AlphaFeed
 from pimm.feeds.fills import FillsFeed
@@ -28,30 +27,26 @@ from pimm.feeds.inventory import InventoryFeed
 from pimm.feeds.live_price import LivePriceFeed
 from pimm.feeds.risk_appetite import RiskAppetiteFeed
 from pimm.gui.process import start_gui_process
-from pimm.utils.lots import build_lot_size_table
 
 logger = logging.getLogger("pimm.simulator")
 
 PRICE_TYPES = ["best_bid", "mid", "best_offer"]
 
-# Approximate HKD prices and HKD->USD fx rate
+# Approximate prices and fx rates per market
 STUB_PRICES = {
-    "0005.HK": 60.0,
-    "0700.HK": 380.0,
-    "9988.HK": 85.0,
-    "1299.HK": 140.0,
-    "0388.HK": 310.0,
+    "0005.HK": 60.0, "0700.HK": 380.0, "9988.HK": 85.0,
+    "1299.HK": 140.0, "0388.HK": 310.0,
 }
-HKD_USD_FX = 0.128
+STUB_FX = {"HK": 0.128, "TW": 0.031}
+
+STUB_LOT_SIZES = {
+    "0005.HK": 400, "0700.HK": 100, "9988.HK": 100,
+    "1299.HK": 500, "0388.HK": 100,
+}
 
 
 def _get_stub_lot_sizes(ric_list):
-    stub = {
-        "0005.HK": 400, "0700.HK": 100, "9988.HK": 100,
-        "1299.HK": 500, "0388.HK": 100,
-    }
-    rows = [{"ric": r, "lot_size": stub.get(r, 100)} for r in ric_list]
-    return pd.DataFrame(rows)
+    return {r: STUB_LOT_SIZES[r] for r in ric_list if r in STUB_LOT_SIZES}
 
 
 def _setup_logging(log_path=None):
@@ -70,44 +65,46 @@ def _setup_logging(log_path=None):
 # -- Simulation threads --
 
 
-def _sim_risk_appetite(feed, running, rng, rics):
+def _sim_risk_appetite(feed, running, rng, all_rics, fx_map):
     while running.is_set():
         rows = []
-        for ric in rics:
+        for ric in all_rics:
+            market = ric.split(".")[-1] if "." in ric else "HK"
+            fx = fx_map.get(market, 0.128)
             rows.append({
                 "ric": ric,
                 "buy_state": rng.choice(PRICE_TYPES),
                 "buy_qty": rng.randint(1000, 50000),
                 "sell_state": rng.choice(PRICE_TYPES),
                 "sell_qty": rng.randint(1000, 50000),
-                "fx_rate": HKD_USD_FX,
+                "fx_rate": fx,
             })
         df = pd.DataFrame(rows)
-        logger.info("SIM risk_appetite:\n%s", df.to_string(index=False))
+        logger.info("SIM risk_appetite: %d rows", len(df))
         feed.on_update(df)
         time.sleep(3)
 
 
-def _sim_live_price(feed, running, rng, rics):
+def _sim_live_price(feed, running, rng, all_rics):
     while running.is_set():
         rows = []
-        for ric in rics:
+        for ric in all_rics:
             base_price = STUB_PRICES.get(ric, 100.0)
             rows.append({
                 "ric": ric,
                 "last_price": base_price * rng.uniform(0.98, 1.02),
             })
         df = pd.DataFrame(rows)
-        logger.info("SIM live_price:\n%s", df.to_string(index=False))
+        logger.info("SIM live_price: %d rows", len(df))
         feed.on_update(df)
         time.sleep(2)
 
 
-def _sim_inventory(feed, running, rng, rics):
+def _sim_inventory(feed, running, rng, all_rics):
     while running.is_set():
-        rows = [{"ric": ric, "inventory": rng.randint(0, 20000)} for ric in rics]
+        rows = [{"ric": ric, "inventory": rng.randint(0, 20000)} for ric in all_rics]
         df = pd.DataFrame(rows)
-        logger.info("SIM inventory:\n%s", df.to_string(index=False))
+        logger.info("SIM inventory: %d rows", len(df))
         feed.on_update(df)
         time.sleep(5)
 
@@ -118,15 +115,15 @@ def _sim_alpha(feed, running, rng, rics):
             {"ric": ric, "alpha": round(rng.uniform(-0.3, 0.3), 4)} for ric in rics
         ]
         df = pd.DataFrame(rows)
-        logger.info("SIM alpha:\n%s", df.to_string(index=False))
+        logger.info("SIM alpha: %d rows", len(df))
         feed.on_update(df)
         time.sleep(20)
 
 
-def _sim_fills(feed, running, rng, rics):
+def _sim_fills(feed, running, rng, all_rics):
     while running.is_set():
         n = rng.randint(1, 4)
-        chosen = rng.sample(rics, k=min(n, len(rics)))
+        chosen = rng.sample(all_rics, k=min(n, len(all_rics)))
         rows = []
         for ric in chosen:
             rows.append({
@@ -137,7 +134,7 @@ def _sim_fills(feed, running, rng, rics):
                 "timestamp": pd.Timestamp.now(tz="Asia/Hong_Kong"),
             })
         df = pd.DataFrame(rows)
-        logger.info("SIM fills:\n%s", df.to_string(index=False))
+        logger.info("SIM fills: %d rows", len(df))
         feed.on_update(df)
         time.sleep(4)
 
@@ -149,9 +146,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="pimm simulator — end-to-end testing harness"
     )
-    parser.add_argument("config", help="Path to market TOML config file")
-    parser.add_argument("--market", default="HK", help="Market section name")
-    parser.add_argument("--gui", action="store_true", help="Launch the GUI dashboard")
+    parser.add_argument("config", help="Path to config.cfg file")
     parser.add_argument("--seed", type=int, default=None, help="Random seed")
     args = parser.parse_args()
 
@@ -162,33 +157,38 @@ def main():
 
     logger.info("=== pimm simulator starting ===")
 
-    # Load config with simulator overrides
-    config = load_config(args.config, args.market)
-    config.sessions = [SessionWindow.parse("00:00-23:59")]
-    config.max_buy_notional = 500_000
-    config.max_sell_notional = 500_000
-    config.full_batch_interval = 2   # minutes (short for testing)
-    config.min_dispatch_interval = 5  # seconds
-    logger.info(
-        "Config loaded: %s (sessions=00:00-23:59, notional caps=$500k, "
-        "full batch every 2min, dispatch cooldown 5s)",
-        config.name,
-    )
+    # Load all market configs with simulator overrides
+    all_configs = load_all_markets(args.config)
+    logger.info("Loaded %d markets: %s", len(all_configs), list(all_configs.keys()))
 
-    # Universe and lot sizes
-    ric_list = load_universe(config.universe_file)
-    lot_df = _get_stub_lot_sizes(ric_list)
-    lot_sizes = build_lot_size_table(lot_df)
-    state_mgr = StateManager(ric_list, lot_sizes, config)
+    # Build per-market state with simulator overrides
+    market_states = {}
+    all_rics = []
+    for mname, config in all_configs.items():
+        config.sessions = [SessionWindow.parse("00:00-23:59")]
+        config.max_buy_notional = 500_000
+        config.max_sell_notional = 500_000
+        config.full_batch_interval = 2
+        config.min_dispatch_interval = 5
+
+        ric_list = load_universe(config.universe_file)
+        lot_sizes = _get_stub_lot_sizes(ric_list)
+        state_mgr = StateManager(ric_list, lot_sizes, config)
+        market_states[mname] = MarketState(mname, config, state_mgr)
+        all_rics.extend(ric_list)
+        logger.info(
+            "[%s] Universe: %d RICs, overrides: sessions=00:00-23:59, "
+            "notional=$500k, full_batch=2min",
+            mname, len(ric_list),
+        )
 
     # Heartbeat
-    heartbeat = HeartbeatMonitor(max_staleness=config.max_staleness)
+    heartbeat = HeartbeatMonitor(max_staleness=30)
 
-    # GUI
-    gui_queue = None
-    if args.gui:
-        gui_queue = Queue(maxsize=100)
-        start_gui_process(gui_queue)
+    # GUI (always starts in simulator)
+    gui_queue = Queue(maxsize=100)
+    cmd_queue = Queue(maxsize=100)
+    start_gui_process(gui_queue, cmd_queue)
 
     # Dispatch callback
     def dispatch(df):
@@ -196,11 +196,11 @@ def main():
 
     # Engine
     engine = TradingEngine(
-        config=config,
-        state_mgr=state_mgr,
+        market_states=market_states,
         gui_queue=gui_queue,
         dispatch_callback=dispatch,
     )
+    engine.set_cmd_queue(cmd_queue)
 
     # Feed adapters
     loop = asyncio.new_event_loop()
@@ -208,11 +208,18 @@ def main():
     def push_event(event_type, data):
         engine.event_queue.put_nowait((event_type, data))
 
+    # Shared feeds
     risk_feed = RiskAppetiteFeed(engine_push=push_event)
     price_feed = LivePriceFeed(engine_push=push_event)
     inv_feed = InventoryFeed(engine_push=push_event)
     fills_feed = FillsFeed(engine_push=push_event)
-    alpha_feed = AlphaFeed(engine_push=push_event, rics=list(lot_sizes.keys()))
+
+    # Per-market alpha feeds
+    alpha_feeds = {}
+    for mname, ms in market_states.items():
+        quotable_rics = list(ms.state_mgr.quotable.index)
+        af = AlphaFeed(engine_push=push_event, rics=quotable_rics)
+        alpha_feeds[mname] = af
 
     # Start feeds
     heartbeat.start()
@@ -220,36 +227,48 @@ def main():
     price_feed.start(loop)
     inv_feed.start(loop)
     fills_feed.start(loop)
-    alpha_feed.start(loop)
+    for af in alpha_feeds.values():
+        af.start(loop)
 
     # Simulation control
     running = threading.Event()
     running.set()
     rng = random.Random(args.seed)
 
-    rics = list(lot_sizes.keys())
     sim_threads = [
         threading.Thread(
-            target=_sim_risk_appetite, args=(risk_feed, running, rng, rics),
+            target=_sim_risk_appetite,
+            args=(risk_feed, running, rng, all_rics, STUB_FX),
             name="sim-risk", daemon=True,
         ),
         threading.Thread(
-            target=_sim_live_price, args=(price_feed, running, rng, rics),
+            target=_sim_live_price,
+            args=(price_feed, running, rng, all_rics),
             name="sim-price", daemon=True,
         ),
         threading.Thread(
-            target=_sim_inventory, args=(inv_feed, running, rng, rics),
+            target=_sim_inventory,
+            args=(inv_feed, running, rng, all_rics),
             name="sim-inventory", daemon=True,
         ),
         threading.Thread(
-            target=_sim_alpha, args=(alpha_feed, running, rng, rics),
-            name="sim-alpha", daemon=True,
-        ),
-        threading.Thread(
-            target=_sim_fills, args=(fills_feed, running, rng, rics),
+            target=_sim_fills,
+            args=(fills_feed, running, rng, all_rics),
             name="sim-fills", daemon=True,
         ),
     ]
+
+    # Per-market alpha sim threads
+    for mname, af in alpha_feeds.items():
+        ms = market_states[mname]
+        rics = list(ms.state_mgr.quotable.index)
+        sim_threads.append(
+            threading.Thread(
+                target=_sim_alpha,
+                args=(af, running, rng, rics),
+                name="sim-alpha-%s" % mname, daemon=True,
+            )
+        )
 
     # Shutdown handler
     def handle_shutdown(sig, frame):
@@ -276,7 +295,8 @@ def main():
         price_feed.stop()
         inv_feed.stop()
         fills_feed.stop()
-        alpha_feed.stop()
+        for af in alpha_feeds.values():
+            af.stop()
         for t in sim_threads:
             t.join(timeout=2)
         loop.close()

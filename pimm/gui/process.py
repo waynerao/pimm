@@ -7,10 +7,10 @@ from multiprocessing import Process
 logger = logging.getLogger(__name__)
 
 
-def start_gui_process(queue):
+def start_gui_process(data_queue, cmd_queue=None):
     proc = Process(
         target=_gui_main,
-        args=(queue,),
+        args=(data_queue, cmd_queue),
         name="pimm-gui",
         daemon=True,
     )
@@ -19,8 +19,7 @@ def start_gui_process(queue):
     return proc
 
 
-def _gui_main(queue):
-    # Import PyQt6 only in the GUI process
+def _gui_main(data_queue, cmd_queue):
     import qdarktheme
     from PyQt6.QtWidgets import QApplication
 
@@ -29,7 +28,7 @@ def _gui_main(queue):
     app = QApplication(sys.argv)
     qdarktheme.setup_theme()
 
-    window = DashboardWindow(queue)
+    window = DashboardWindow(data_queue, cmd_queue)
     window.show()
 
     sys.exit(app.exec())

@@ -3,13 +3,13 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from configs.config import MarketConfig, SessionWindow, load_config
+from pimm.config import MarketConfig, SessionWindow, load_config
 from pimm.engine.state import StateManager
 
 
 @pytest.fixture
 def config_path():
-    return Path(__file__).parent.parent / "configs" / "config.toml"
+    return Path(__file__).parent.parent / "configs" / "config.cfg"
 
 
 @pytest.fixture
@@ -86,7 +86,6 @@ def fills_df():
 
 
 def make_config(sessions):
-    # Helper to build a minimal config for testing
     return MarketConfig(
         name="TEST",
         timezone="Asia/Hong_Kong",

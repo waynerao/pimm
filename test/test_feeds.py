@@ -15,7 +15,6 @@ from pimm.feeds.risk_appetite import RiskAppetiteFeed
 
 
 def _capture(*containers):
-    # Returns a push function that appends (event_type, data) to containers
     def push(event_type, data):
         for c in containers:
             c.append((event_type, data))
@@ -23,7 +22,6 @@ def _capture(*containers):
 
 
 def _capture_data(container):
-    # Returns a push function that appends just the data
     return lambda et, d: container.append(d)
 
 
@@ -100,27 +98,13 @@ class TestFeedAdapterBase:
         finally:
             _stop_loop(loop, t)
 
-    def test_subscribe_exception_does_not_crash(self):
-        class BadFeed(FeedAdapter):
-            def _subscribe(self):
-                raise RuntimeError("subscribe failed")
-
-        loop, t = _make_loop()
-        try:
-            feed = BadFeed(event_type="bad", engine_push=lambda et, d: None)
-            feed.start(loop)
-            time.sleep(0.3)
-            # Thread should have exited without crashing the process
-            assert not feed._thread.is_alive()
-        finally:
-            feed.stop()
-            _stop_loop(loop, t)
-
     def test_queue_and_on_update_interleave(self):
         received = []
         loop, t = _make_loop()
         try:
-            feed = FeedAdapter(event_type="test", engine_push=_capture_data(received))
+            feed = FeedAdapter(
+                event_type="test", engine_push=_capture_data(received)
+            )
             feed.start(loop)
             feed.on_update(pd.DataFrame({"src": ["on_update"]}))
             feed._data_queue.put(pd.DataFrame({"src": ["queue"]}))
@@ -131,6 +115,51 @@ class TestFeedAdapterBase:
             assert "queue" in sources
         finally:
             feed.stop()
+            _stop_loop(loop, t)
+
+    def test_subscription_params_stored(self):
+        feed = FeedAdapter(
+            event_type="test",
+            engine_push=lambda et, d: None,
+            service_name="svc1",
+            table_name="tbl1",
+            recovery_query="select * from t",
+            recovery_params={"p": 1},
+            filter_query="ric in x",
+            filter_params={"x": ["A"]},
+        )
+        assert feed._service_name == "svc1"
+        assert feed._table_name == "tbl1"
+        assert feed._recovery_query == "select * from t"
+        assert feed._recovery_params == {"p": 1}
+        assert feed._filter_query == "ric in x"
+        assert feed._filter_params == {"x": ["A"]}
+
+    def test_external_thread_started(self):
+        class FakeThread:
+            def __init__(self):
+                self.started = False
+                self.stopped = False
+
+            def start(self):
+                self.started = True
+
+            def stop(self):
+                self.stopped = True
+
+        fake = FakeThread()
+        loop, t = _make_loop()
+        try:
+            feed = FeedAdapter(
+                event_type="test",
+                engine_push=lambda et, d: None,
+                thread=fake,
+            )
+            feed.start(loop)
+            assert fake.started
+            feed.stop()
+            assert fake.stopped
+        finally:
             _stop_loop(loop, t)
 
 

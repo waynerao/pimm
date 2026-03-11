@@ -1,4 +1,5 @@
-# Alpha signal feed adapter (alphaflow stub)
+# Alpha signal feed adapter (queue-only, no desktool thread)
+# External alpha project pushes DataFrames into data_queue directly.
 
 import pandas as pd
 
@@ -11,9 +12,9 @@ class AlphaFeed(FeedAdapter):
         super().__init__(event_type="alpha", engine_push=engine_push)
         self._rics = rics or []
 
-    def _subscribe(self):
-        # TODO: alphaflow.subscribe(self._data_queue, ...)
-        # Push zero-alpha stub on startup
+    def start(self, loop):
+        super().start(loop)
+        # Push zero-alpha stub on startup for known rics
         if self._rics:
             stub = pd.DataFrame({"ric": self._rics, "alpha": [0.0] * len(self._rics)})
             self._push(stub)

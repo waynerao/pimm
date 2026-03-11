@@ -1,4 +1,4 @@
-# Base adapter: thread-to-asyncio bridge for feed subscriptions
+# Base adapter: thread management + queue-to-asyncio bridge for feed subscriptions
 
 import logging
 import queue
@@ -8,17 +8,39 @@ logger = logging.getLogger(__name__)
 
 
 class FeedAdapter:
-    # Base class for threaded feed adapters.
+    # Base class for feed adapters.
     #
-    # Production: subclass overrides _subscribe() to call desktool.subscribe()
-    # with self._data_queue, then _run() polls the queue automatically.
+    # Production (desktool feeds): receives a thread object from desktool.
+    # Engine controls start/stop. Desktool pushes DataFrames into data_queue;
+    # a polling loop forwards them to the engine's asyncio queue.
     #
-    # Simulator: call on_update(df) directly from sim threads (bypasses queue).
+    # Alpha feed: no thread object. External project pushes to data_queue.
+    # Polling loop forwards to engine.
+    #
+    # Simulator: call on_update(df) directly (bypasses queue).
 
-    def __init__(self, event_type, engine_push):
+    def __init__(
+        self,
+        event_type,
+        engine_push,
+        thread=None,
+        service_name=None,
+        table_name=None,
+        recovery_query=None,
+        recovery_params=None,
+        filter_query=None,
+        filter_params=None,
+    ):
         self._event_type = event_type
         self._engine_push = engine_push
-        self._thread = None
+        self._ext_thread = thread
+        self._service_name = service_name
+        self._table_name = table_name
+        self._recovery_query = recovery_query
+        self._recovery_params = recovery_params
+        self._filter_query = filter_query
+        self._filter_params = filter_params
+        self._poll_thread = None
         self._running = False
         self._loop = None
         self._data_queue = queue.Queue()
@@ -26,25 +48,42 @@ class FeedAdapter:
     def start(self, loop):
         self._running = True
         self._loop = loop
-        self._thread = threading.Thread(
-            target=self._run,
+
+        # Start the desktool thread if provided
+        if self._ext_thread is not None:
+            try:
+                self._ext_thread.start()
+                logger.info("Feed %s: external thread started", self._event_type)
+            except Exception:
+                logger.exception(
+                    "Feed %s: failed to start external thread",
+                    self._event_type,
+                )
+
+        # Start queue polling thread
+        self._poll_thread = threading.Thread(
+            target=self._poll_loop,
             name="feed-%s" % self._event_type,
             daemon=True,
         )
-        self._thread.start()
+        self._poll_thread.start()
         logger.info("Feed %s started", self._event_type)
 
     def stop(self):
         self._running = False
+        if self._ext_thread is not None:
+            try:
+                if hasattr(self._ext_thread, "stop"):
+                    self._ext_thread.stop()
+                logger.info("Feed %s: external thread stopped", self._event_type)
+            except Exception:
+                logger.exception(
+                    "Feed %s: failed to stop external thread",
+                    self._event_type,
+                )
         logger.info("Feed %s stopping", self._event_type)
 
-    def _run(self):
-        try:
-            self._subscribe()
-        except Exception:
-            logger.exception("Feed %s subscribe failed", self._event_type)
-            return
-
+    def _poll_loop(self):
         while self._running:
             try:
                 df = self._data_queue.get(timeout=1.0)
@@ -61,7 +100,3 @@ class FeedAdapter:
     def on_update(self, df):
         # Direct push for simulator use (bypasses _data_queue)
         self._push(df)
-
-    def _subscribe(self):
-        # Override in subclasses to call desktool.subscribe(self._data_queue, ...)
-        pass

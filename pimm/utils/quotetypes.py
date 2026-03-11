@@ -31,26 +31,24 @@ class TradeFill:
 
 class EngineSnapshot:
     # Snapshot of engine state pushed to GUI via mp.Queue
-    # Contains a copy of the universe DataFrame instead of StockState dict
+    # Contains per-market DataFrames and global summary
 
     def __init__(
         self,
-        universe,
-        buy_scaling,
-        sell_scaling,
+        markets,
+        scaling,
         recent_fills,
-        session_active,
-        session_end_countdown,
+        session_status,
+        session_countdowns,
         feed_status,
         timestamp,
-        last_full_batch_time=None,
+        last_full_batch_times=None,
     ):
-        self.universe = universe            # pd.DataFrame copy
-        self.buy_scaling = buy_scaling
-        self.sell_scaling = sell_scaling
-        self.recent_fills = recent_fills    # list of TradeFill
-        self.session_active = session_active
-        self.session_end_countdown = session_end_countdown
-        self.feed_status = feed_status      # dict of feed_name -> status str
+        self.markets = markets
+        self.scaling = scaling
+        self.recent_fills = recent_fills
+        self.session_status = session_status
+        self.session_countdowns = session_countdowns
+        self.feed_status = feed_status
         self.timestamp = timestamp
-        self.last_full_batch_time = last_full_batch_time
+        self.last_full_batch_times = last_full_batch_times or {}

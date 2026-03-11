@@ -2,16 +2,18 @@
 
 ## 1. Project Overview
 
-A stock dark pool market-making engine with dynamic pricing and a real-time GUI dashboard.
+A multi-market dark pool market-making engine with dynamic pricing, controlled and monitored through a real-time GUI dashboard.
 
 **Core workflow:**
-1. Load market-specific TOML config; load stock universe from CSV
-2. Query lot sizes from desktool for the universe RICs
-3. Initialize a universe DataFrame — the single source of truth for all per-stock state
-4. Subscribe to 4 live feeds: risk appetite, inventory, trade fills, alpha signals
-5. Compute quote sizes through a vectorized 4-step sizing pipeline
-6. Dispatch quotes in two modes: scheduled full batch and reactive partial update
-7. Monitor everything via a separate-process PyQt6 dashboard
+1. Launch GUI — the primary control and monitoring interface
+2. Load config.cfg (all markets); per market: load universe CSV, query lot sizes from desktool
+3. Check trading day type per market (desktool); auto-enable/disable accordingly
+4. Initialize per-market universe DataFrame — single source of truth for all per-stock state
+5. Subscribe to shared feeds (risk appetite, live price, inventory, fills) via desktool threads
+6. Subscribe to per-market alpha feeds via queue (external alpha project)
+7. Compute quote sizes through a vectorized 4-step sizing pipeline
+8. Dispatch quotes in two modes: scheduled full batch and reactive partial update
+9. GUI displays live status, trade fills, PnL; provides start/stop, param view/reload controls
 
 ---
 
@@ -20,104 +22,103 @@ A stock dark pool market-making engine with dynamic pricing and a real-time GUI 
 ### 2.1 Startup Sequence
 
 ```
-1. Load TOML config (sessions, caps, notional limits, timing)
-2. Load stock universe from CSV → list of RICs to quote
-3. Query lot sizes from desktool for universe RICs
-   - RICs with no lot size → log warning, skip (not quoted)
-4. Initialize universe DataFrame (one row per valid RIC)
-   - Static columns set once: ric, lot_size, cap (from config overrides)
-   - Dynamic columns initialized to defaults: buy_raw=0, sell_raw=0,
-     alpha=0, inventory=0, last_price=0, fx_rate=1, etc.
-5. Start 5 feed subscription threads (risk appetite, live price, inventory, fills, alpha)
-6. Start heartbeat monitor thread
-7. Optionally start GUI in separate process
-8. Start async engine loop
+1. Launch GUI process (always starts)
+2. Load config.cfg → MarketConfig per section ([HK], [TW], etc.)
+3. For each market:
+   a. Query desktool.get_trading_day_type() → 0 (non-trading) / 0.5 (half) / 1 (full)
+   b. Load universe CSV → list of RICs
+   c. Query lot sizes from desktool.get_lot_size() for universe RICs
+      - RICs with no lot size → set quote_status=False, remark="no lot size"
+   d. Initialize universe DataFrame (one row per RIC, all included)
+   e. Determine active sessions based on trading day type:
+      - Full day: all configured sessions
+      - Half day: first (morning) session only
+      - Non-trading: disabled by default (GUI can override)
+4. Start shared feed threads (risk appetite, live price, inventory, fills)
+   - Desktool provides thread objects; engine controls start/stop
+5. Start per-market alpha feed queue polling threads
+6. Start heartbeat monitor
+7. Start shared async engine loop (manages all markets)
 ```
 
-### 2.2 Universe DataFrame
+### 2.2 Universe DataFrame (per market)
 
-All per-stock state lives in a single pandas DataFrame, indexed by `ric`. This is the only mutable state for the quoting engine.
+All per-stock state lives in a single pandas DataFrame per market, indexed by `ric`.
 
 **Columns:**
 
 | Column | Source | Updated by | Description |
 |--------|--------|------------|-------------|
 | `ric` | CSV | startup | Stock identifier (index) |
-| `lot_size` | desktool | startup | Minimum tradeable lot |
-| `stock_limit` | TOML config | startup | Single-name limit (per-stock override or market default) |
-| `buy_state` | risk appetite feed | `update_risk_appetite()` | Price type for buy side (e.g. BEST_BID) |
+| `quote_status` | startup / GUI | startup | Whether this stock is actively quoting (bool) |
+| `remark` | startup | startup | Reason for status (e.g. "no lot size") |
+| `lot_size` | desktool | startup | Minimum tradeable lot (NaN if not found) |
+| `stock_limit` | config | startup | Single-name limit (per-stock override or market default) |
+| `buy_state` | risk appetite feed | `update_risk_appetite()` | Price type for buy side |
 | `sell_state` | risk appetite feed | `update_risk_appetite()` | Price type for sell side |
 | `buy_raw` | risk appetite feed | `update_risk_appetite()` | Raw buy quantity from KDB+ |
 | `sell_raw` | risk appetite feed | `update_risk_appetite()` | Raw sell quantity from KDB+ |
-| `last_price` | live price feed (KDB+ tick) | `update_live_price()` | Stock price in local currency |
+| `last_price` | live price feed | `update_live_price()` | Stock price in local currency |
 | `fx_rate` | risk appetite feed | `update_risk_appetite()` | Local currency → USD |
 | `alpha` | alpha feed | `update_alpha()` | Alpha signal ∈ [-1, 1] |
 | `inventory` | inventory feed | `update_inventory()` | Current position |
 | `live_buy_qty` | dispatch | `_dispatch_*()` | Currently dispatched buy quantity |
 | `live_sell_qty` | dispatch | `_dispatch_*()` | Currently dispatched sell quantity |
-| `last_sent_time` | dispatch | `_dispatch_*()` | Timestamp of last dispatch for this stock |
-| `filled_buy_since_dispatch` | fill event | `process_fill()` | Cumulative buy fills since last full batch (reset on full batch) |
-| `filled_sell_since_dispatch` | fill event | `process_fill()` | Cumulative sell fills since last full batch (reset on full batch) |
-| `pnl_buy_qty` | fill event | `_handle_fills()` | Cumulative bought qty today (reset on session start) |
-| `pnl_buy_cost` | fill event | `_handle_fills()` | Cumulative buy cost today (sum of fill_price * fill_qty) |
-| `pnl_sell_qty` | fill event | `_handle_fills()` | Cumulative sold qty today (reset on session start) |
-| `pnl_sell_revenue` | fill event | `_handle_fills()` | Cumulative sell revenue today (sum of fill_price * fill_qty) |
+| `last_sent_time` | dispatch | `_dispatch_*()` | Timestamp of last dispatch |
+| `filled_buy_since_dispatch` | fill event | `accumulate_fills()` | Cumulative buy fills since last full batch |
+| `filled_sell_since_dispatch` | fill event | `accumulate_fills()` | Cumulative sell fills since last full batch |
+| `pnl_buy_qty` | fill event | `_handle_fills()` | Cumulative bought qty today |
+| `pnl_buy_cost` | fill event | `_handle_fills()` | Cumulative buy cost today |
+| `pnl_sell_qty` | fill event | `_handle_fills()` | Cumulative sold qty today |
+| `pnl_sell_revenue` | fill event | `_handle_fills()` | Cumulative sell revenue today |
 
-Feed updates merge into the DataFrame by RIC (left join — only universe RICs are kept, unknown RICs are ignored).
-
-**Thread safety:** No locks are needed on the universe DataFrame. Feed threads never touch it directly — they push DataFrames into the `asyncio.Queue` via `loop.call_soon_threadsafe()`. Only the engine's async loop (single thread) reads and writes the universe DataFrame. The GUI process receives a **copy** via `mp.Queue`, so there is no concurrent access.
+**Thread safety:** No locks needed. Feed threads push into `asyncio.Queue` via `call_soon_threadsafe()`. Only the engine's async loop reads/writes DataFrames. GUI receives copies via `mp.Queue`.
 
 ### 2.3 Steady-State Event Loop
 
 ```
 Feed event arrives (risk appetite / live price / inventory / alpha / fill)
   │
-  ├─ Merge feed data into universe DataFrame
-  │   - Risk appetite: update buy_raw, sell_raw, buy_state, sell_state, fx_rate
-  │   - Live price: update last_price
-  │   - Inventory: update inventory column
-  │   - Alpha: update alpha column (clamped to [-1, 1])
-  │   - Fill: accumulate into filled_buy/sell_since_dispatch + PnL accumulators
+  ├─ Route to correct market by RIC membership
   │
-  ├─ If session is active → run dispatch decision logic
+  ├─ Merge feed data into market's universe DataFrame
   │
-  └─ Push GUI snapshot (copy of DataFrame, non-blocking)
+  ├─ If market's session is active → run dispatch decision logic for that market
+  │
+  └─ Push GUI snapshot (copies of all market DataFrames, non-blocking)
 ```
 
-### 2.4 Dispatch Decision Logic
+### 2.4 Dispatch Decision Logic (per market)
 
 ```
-_try_dispatch():
+_try_dispatch(market):
   │
   ├─ 1. COOLDOWN CHECK
-  │     Was last dispatch (full or partial) < min_dispatch_interval ago?
-  │     → YES: do nothing, wait for next event
+  │     Was last dispatch < min_dispatch_interval ago?
+  │     → YES: do nothing
   │
   ├─ 2. FULL BATCH CHECK
   │     Has it been >= full_batch_interval since last full batch?
-  │     (Or is this the very first dispatch?)
   │     → YES: run full batch
   │
   ├─ 3. COMPUTE PARTIAL (vectorized)
-  │     Run 4-step pipeline on full DataFrame (using last batch's scaling)
-  │     Apply inventory constraint (post-pipeline)
-  │     Filter to stocks needing update:
+  │     Run 4-step pipeline using last batch's scaling
+  │     Apply inventory constraint
+  │     Filter stocks needing update:
   │       Case A — Quote change: |optimal - live| / live > partial_change_threshold
   │       Case B — Refill: filled >= refill_fill_threshold * live_qty
   │     Cap refill stocks: dispatch qty ≤ optimal - filled_since_last_full_dispatch
   │     → Empty: do nothing
   │
   ├─ 4. NOTIONAL CHECK
-  │     If applying the partial changes would push total notional over limit
-  │     → YES: promote to full batch (recalculates scaling)
+  │     Would push total notional over limit?
+  │     → YES: promote to full batch
   │
   └─ 5. SEND PARTIAL
         Dispatch only the selected stocks
 ```
 
 ### 2.5 The 4-Step Sizing Pipeline (Vectorized)
-
-The pipeline computes the "optimal quote" — what we'd want to trade based on current inputs. Inventory constraint is applied separately at dispatch time, not in the pipeline.
 
 ```python
 # Step 1: Alpha Skew
@@ -141,183 +142,258 @@ df['buy_optimal']  = (df['buy_scaled']  // df['lot_size']) * df['lot_size']
 df['sell_optimal'] = (df['sell_scaled'] // df['lot_size']) * df['lot_size']
 ```
 
-For **full batch**: compute fresh scaling factors in step 3.
-For **partial update**: substitute cached `buy_scaling` / `sell_scaling` from last full batch.
-
 ### 2.6 Pre-Dispatch: Inventory Constraint
-
-Applied after the sizing pipeline, right before dispatch:
 
 ```python
 df['sell_dispatch'] = df['sell_optimal'].clip(upper=df['inventory'].clip(lower=0))
-df['buy_dispatch']  = df['buy_optimal']  # buy side unaffected by inventory
+df['buy_dispatch']  = df['buy_optimal']
 ```
-
-This keeps the stored optimal quote unconstrained by inventory (inventory changes frequently and shouldn't affect the optimal calculation).
 
 ### 2.7 Full Batch vs Partial Update
 
-**Full Batch** (scheduled, every `full_batch_interval` minutes):
-- Runs vectorized 4-step pipeline on entire DataFrame
+**Full Batch** (scheduled, every `full_batch_interval` minutes per market):
 - Recalculates global scaling factors from scratch
-- Applies inventory constraint
 - Dispatches all stocks with non-zero quantities
-- Updates `live_buy_qty`, `live_sell_qty`, `last_sent_time` for all stocks
-- Resets `filled_buy/sell_since_dispatch` to 0 for all stocks
-- Saves scaling factors for partial updates to reuse
+- Resets `filled_buy/sell_since_dispatch` to 0
+- Saves scaling factors for partial updates
 
 **Partial Update** (reactive, between full batches):
-- Runs vectorized 4-step pipeline with cached scaling factors
-- Applies inventory constraint
-- Selects stocks to dispatch (two cases):
-  - **Quote change:** `|optimal - live| / live > partial_change_threshold` (e.g. 10%)
-  - **Refill:** `filled_since_dispatch >= refill_fill_threshold * live_qty` (e.g. 50%)
-- For refill stocks: dispatch qty is capped at `optimal - filled_since_last_full_dispatch`
-  (ensures total execution across multiple refills does not exceed the optimal amount)
-- If expected total notional would breach limit → auto-promote to full batch
-- Otherwise dispatches only the selected stocks
+- Uses cached scaling factors from last full batch
+- Selects stocks by quote change or refill threshold
+- Refill cap: `optimal - filled_since_last_full_dispatch`
+- Auto-promotes to full batch on notional breach
 
 ### 2.8 Refill Logic
 
-Refill is one case of partial update, triggered by fills exceeding a threshold.
+- **On fill:** Accumulate into `filled_buy/sell_since_dispatch` (do NOT reduce live qty)
+- **Trigger:** `filled >= refill_fill_threshold * live_qty`
+- **Cap:** `dispatch_qty = min(optimal, optimal - filled_since_last_full_dispatch)`
+- **Reset:** Only on full batch, not on partial
 
-**On fill event:**
-- Accumulate `fill_qty` into `filled_buy/sell_since_dispatch` (do NOT reduce `live_buy/sell_qty` — the dark pool tracks remaining quantity internally)
+### 2.9 Dispatch Output
 
-**On partial update (refill path):**
-- Trigger condition: `filled_since_dispatch >= refill_fill_threshold * live_qty`
-  (e.g. 50% of the live quote has been filled)
-- Compute dispatch quantity normally through the 4-step pipeline
-- Cap: `dispatch_qty = min(optimal_qty, optimal_qty - filled_since_last_full_dispatch)`
-  (prevents total execution from exceeding optimal across multiple refills)
-- `filled_since_dispatch` is **not** reset on partial update — it accumulates across the full batch cycle and is only reset on full batch
-
-**Example:**
-```
-Live quote: buy 1000
-Fill: 600 (60% > 50% threshold → trigger refill)
-Optimal: 1200
-Refill qty: min(1200, 1200 - 600) = 600
-→ Send 600
-
-Another fill: 300 (total filled = 900)
-900 > 50% of 600 (live) → trigger refill
-Refill qty: min(1200, 1200 - 900) = 300
-→ Send 300
-
-Total execution: 900 + 300 = 1200 = optimal ✓
-```
-
-### 2.9 Session Management
-
-- **Session windows:** Configured as `"HH:MM-HH:MM"` (start inclusive, end exclusive)
-- **Session start:** Immediate full batch dispatch
-- **Session end:** Cancel-all batch (zero-qty for all stocks)
-- **Between sessions:** No quoting, no dispatching
-- **Order validity:** Orders valid for `order_valid_time` minutes; `refresh_buffer` seconds for proactive refresh
-
-### 2.10 Output
-
-Dispatched quotes are a slice of the universe DataFrame sent to the KDB+ injector:
+Each dispatch (full batch or partial update) produces a DataFrame representing the order:
 
 ```
 ric, buy_state, buy_qty, sell_state, sell_qty
 ```
 
----
+Currently logged/printed. Actual KDB+ injection via desktool to be wired later.
 
-## 3. Stock Universe
+### 2.10 Mark-to-Market PnL
 
-### 3.1 CSV Config File
+**Accumulators** (per stock, reset daily at session start):
+- `pnl_buy_qty` / `pnl_buy_cost` — cumulative bought qty and cost
+- `pnl_sell_qty` / `pnl_sell_revenue` — cumulative sold qty and revenue
 
-The list of RICs to quote is loaded from a CSV file, referenced in the TOML config:
+**Formula:**
+- Local PnL: `last_price × (pnl_buy_qty - pnl_sell_qty) - pnl_buy_cost + pnl_sell_revenue`
+- USD PnL: `local_pnl × fx_rate`
 
-```toml
-[market]
-universe_file = "configs/hk_universe.csv"
-```
+Auto re-evaluates when `last_price` changes. Reset at session start per market.
 
-CSV format (single column with header):
-```csv
-ric
-0005.HK
-0700.HK
-9988.HK
-1299.HK
-0388.HK
-```
+### 2.11 Session Management
 
-### 3.2 Startup Flow
-
-```
-1. Load TOML config → get universe_file path
-2. Read CSV → list of RICs
-3. Query desktool for lot sizes for those RICs
-4. For each RIC:
-   - Lot size found → include in universe DataFrame
-   - Lot size NOT found → log warning, skip (not quoted)
-5. Only RICs with valid lot sizes participate in quoting
-```
+- **Session windows:** `"HH:MM-HH:MM"` per market (multiple allowed)
+- **Half trading day:** Only morning (first) session active
+- **Session start:** Immediate full batch dispatch + PnL reset
+- **Session end:** Cancel-all batch (zero-qty for all stocks)
+- **Order validity:** `order_valid_time` minutes with `refresh_buffer` seconds
 
 ---
 
-## 4. Tech Stack
+## 3. Configuration
 
-| Component | Choice |
-|-----------|--------|
-| Language | Python 3.11+ |
-| Concurrency | `asyncio` (engine) + `threading` (feeds) + `multiprocessing` (GUI) |
-| Config | Per-market `.toml` via `tomllib` + universe `.csv` |
-| GUI | PyQt6 + `pyqtdarktheme` |
-| Alerting | `winsound.Beep` on feed staleness |
-| Package mgmt | `uv` |
-| Linting | `ruff` |
-| Testing | `pytest` |
+### 3.1 Config File (`configs/config.cfg`)
+
+Uses Python `configparser`. One section per market, all in one file.
+
+```ini
+[HK]
+timezone = Asia/Hong_Kong
+universe_file = configs/hk_universe.csv
+sessions = 09:30-12:00,13:00-16:00
+order_valid_time = 5
+refresh_buffer = 15
+full_batch_interval = 10
+min_dispatch_interval = 5
+single_name_cap = 50000
+max_buy_notional = 10000000
+max_sell_notional = 10000000
+max_staleness = 30
+partial_change_threshold = 0.10
+refill_fill_threshold = 0.50
+
+[HK.overrides]
+0005.HK = 100000
+0700.HK = 20000
+
+[TW]
+timezone = Asia/Taipei
+universe_file = configs/tw_universe.csv
+sessions = 09:00-13:30
+...
+```
+
+### 3.2 Config Loader (`pimm/config.py`)
+
+- Reads `config.cfg` using `configparser`
+- Returns `MarketConfig` per section
+- Resolves per-stock overrides from `[{market}.overrides]`
+- Supports reload at runtime (triggered by GUI button)
+
+### 3.3 Trading Day Type
+
+`desktool.get_trading_day_type()` returns per-market trading day type at startup:
+- `1` — **Full:** All sessions active
+- `0.5` — **Half:** Morning session only
+- `0` — **Non-trading:** Disabled (GUI can override)
 
 ---
 
-## 5. Project Structure
+## 4. Feed Interfaces
+
+### 4.1 Feed Adapter Base Class
+
+`FeedAdapter` manages a desktool subscription thread + queue polling.
+
+**Init parameters:**
+- `event_type` — event name for engine routing
+- `engine_push` — callback to push (event_type, DataFrame) to engine
+- `thread` — desktool thread object (optional, None for alpha)
+- `data_queue` — `queue.Queue` for receiving DataFrames
+- `service_name` — KDB+ service name
+- `table_name` — KDB+ table name
+- `recovery_query` / `recovery_params` — initial state recovery
+- `filter_query` / `filter_params` — real-time filter
+
+**Start:** starts the desktool thread (if provided) + starts queue polling loop.
+**Stop:** stops the desktool thread + stops polling.
+**Simulator:** calls `feed.on_update(df)` directly (bypasses queue).
+
+### 4.2 Feed Table
+
+| Feed | Source | Shared | Thread | Columns |
+|------|--------|--------|--------|---------|
+| Risk Appetite | desktool (KDB+) | Yes | desktool | `ric, buy_state, buy_qty, sell_state, sell_qty, fx_rate` |
+| Live Price | desktool (KDB+) | Yes | desktool | `ric, last_price` |
+| Inventory | desktool (KDB+) | Yes | desktool | `ric, inventory` |
+| Trade Fills | desktool (KDB+) | Yes | desktool | `ric, side, fill_qty, fill_price, timestamp` |
+| Alpha | external project | Per-market | None | `ric, alpha` (float in [-1, 1]) |
+
+Shared feeds serve all markets; events routed by RIC membership.
+
+---
+
+## 5. GUI Dashboard
+
+### 5.1 Data Flow
+
+- Engine → `mp.Queue` → `EngineSnapshot` (per-market DataFrame copies + summary) → GUI polls via `QTimer`
+- GUI → `mp.Queue` → commands (start/stop, reload config) → engine processes
+
+### 5.2 Layout
+
+**Top Left — Country Control Panel (static, all countries visible):**
+- Per country row: market name, trading day type, session window, start/stop button
+- Per country: "View Params" button (read-only popup), "Reload Params" button (re-reads config.cfg)
+
+**Top Right — Global Summary:**
+- Per-market scaling factors (buy/sell)
+- Total notional by side (USD)
+- Aggregate PnL (local + USD)
+
+**Middle — Quoting Table (with country filter):**
+- Combined optimal quotes + current live quoting info per stock
+- Country filter dropdown to narrow view
+- Columns: RIC, Bid State, Bid Qty, Offer State, Offer Qty, Last Price, Inventory, Alpha, PnL, Filled Since Dispatch
+
+**Bottom — Trade Fills (filtered by country filter above):**
+- Scrolling list of recent fill events
+- Filtered by same country selection
+
+**Theme:** Dark mode (`pyqtdarktheme`)
+
+---
+
+## 6. Architecture
+
+### 6.1 Concurrency
+
+```
+Main Process
+├── asyncio event loop (main thread)
+│   └── TradingEngine.run()
+│       ├── Per-market state (DataFrame, dispatch timing, session)
+│       └── asyncio.Queue ← (event_type, market, DataFrame)
+│
+├── Thread: feed-risk_appetite  (shared, desktool thread) ─┐
+├── Thread: feed-live_price     (shared, desktool thread) ─┤ All push via
+├── Thread: feed-inventory      (shared, desktool thread) ─┤ loop.call_soon_threadsafe()
+├── Thread: feed-fills          (shared, desktool thread) ─┘
+├── Thread: feed-alpha-HK      (per-market, queue polling) ─┐
+├── Thread: feed-alpha-TW      (per-market, queue polling) ─┤
+├── Thread: heartbeat-monitor   (daemon)
+│
+└── GUI Process (multiprocessing)
+    ├── mp.Queue ← EngineSnapshot (read)
+    └── mp.Queue → commands (write)
+```
+
+### 6.2 Feed Routing
+
+Shared feeds push DataFrames containing RICs from multiple markets. Engine routes each row to the correct market's DataFrame by RIC membership.
+
+### 6.3 GUI Commands
+
+GUI sends commands to engine via `mp.Queue`:
+- `("start", market_name)` — start quoting for a market
+- `("stop", market_name)` — stop quoting for a market
+- `("reload", market_name)` — reload config from disk for a market
+
+---
+
+## 7. Project Structure
 
 ```
 pimarketmaker/
-├── spec.md                     # Original product specification
+├── pimm.md                     # Project specification
 ├── PLAN.md                     # This file
 ├── pyproject.toml              # Build config, deps, tool settings
 ├── configs/
-│   ├── __init__.py
-│   ├── config.py               # TOML config loader + universe CSV loader
-│   ├── config.toml             # Market config ([HK] section)
-│   └── hk_universe.csv         # HK stock universe (RICs to quote)
+│   ├── config.cfg              # All markets config (configparser format)
+│   ├── hk_universe.csv         # HK stock universe
+│   └── tw_universe.csv         # TW stock universe (example)
 ├── pimm/
 │   ├── __init__.py
-│   ├── types.py                # Shared data types (enums, TradeFill, EngineSnapshot)
+│   ├── config.py               # Config loader (configparser + universe CSV)
 │   ├── main.py                 # Production entry point
 │   ├── simulator.py            # E2E simulation harness
 │   ├── engine/
 │   │   ├── __init__.py
-│   │   ├── state.py            # Universe DataFrame management (feed updates)
+│   │   ├── state.py            # Per-market universe DataFrame management
 │   │   ├── sizing.py           # 4-step sizing pipeline (vectorized pandas)
 │   │   ├── dispatcher.py       # Full batch + partial update builder
-│   │   ├── loop.py             # Async trading engine + session monitor
+│   │   ├── loop.py             # Async trading engine (shared loop, per-market state)
 │   │   └── refill.py           # Fill accumulation + refill trigger logic
 │   ├── feeds/
 │   │   ├── __init__.py
-│   │   ├── base.py             # FeedAdapter base (thread → asyncio bridge)
-│   │   ├── risk_appetite.py    # Risk appetite feed (desktool stub)
-│   │   ├── live_price.py       # Live price feed (KDB+ tick stub)
-│   │   ├── inventory.py        # Inventory feed (desktool stub)
-│   │   ├── fills.py            # Trade fills feed (desktool stub)
-│   │   ├── alpha.py            # Alpha signal feed (alphaflow stub)
+│   │   ├── base.py             # FeedAdapter base (thread mgmt + queue polling → asyncio)
+│   │   ├── risk_appetite.py    # Risk appetite feed (desktool thread)
+│   │   ├── live_price.py       # Live price feed (desktool thread)
+│   │   ├── inventory.py        # Inventory feed (desktool thread)
+│   │   ├── fills.py            # Trade fills feed (desktool thread)
+│   │   ├── alpha.py            # Alpha signal feed (queue-only, no thread)
 │   │   └── heartbeat.py        # Feed staleness monitor
 │   ├── gui/
 │   │   ├── __init__.py
 │   │   ├── process.py          # GUI process bootstrap (multiprocessing)
 │   │   ├── dashboard.py        # Main PyQt6 dashboard window
-│   │   └── widgets.py          # Custom widgets (ScalingBanner, AlphaItem, etc.)
+│   │   └── widgets.py          # Custom widgets (ScalingBanner, PnlPanel, etc.)
 │   └── utils/
 │       ├── __init__.py
-│       ├── lots.py             # Lot size table builder
-│       └── time.py             # HKT timezone helpers + session checks
+│       ├── quotetypes.py       # Shared data types (enums, TradeFill, EngineSnapshot)
+│       └── time.py             # Timezone helpers + session checks
 └── test/
     ├── __init__.py
     ├── conftest.py             # Shared fixtures
@@ -325,189 +401,44 @@ pimarketmaker/
     ├── test_sizing.py          # Vectorized sizing pipeline
     ├── test_fills.py           # Fill accumulation + state updates
     ├── test_refill.py          # Refill trigger + capping logic
-    └── test_session.py         # Session windows + refresh timing
+    ├── test_session.py         # Session windows + refresh timing
+    ├── test_pnl.py             # PnL calculation + daily reset
+    └── test_feeds.py           # Feed adapter base + concrete feeds
 ```
 
 ---
 
-## 6. Feed Interfaces
+## 8. External Dependencies
 
-All feeds push `pd.DataFrame` via threaded callbacks into the engine's async queue.
-
-| Feed | Source | Columns | Frequency |
-|------|--------|---------|-----------|
-| Risk Appetite | desktool (KDB+) | `ric, buy_state, buy_qty, sell_state, sell_qty, fx_rate` | Periodic (global snapshot) |
-| Live Price | KDB+ (tick) | `ric, last_price` | Real-time (on tick) |
-| Inventory | desktool (KDB+) | `ric, inventory` | On change |
-| Trade Fills | desktool (KDB+) | `ric, side, fill_qty, fill_price, timestamp` | On fill |
-| Alpha | alphaflow | `ric, alpha` (float in [-1, 1]) | On change |
-
-**Note:** `last_price` is the stock price in local currency, received via a dedicated real-time KDB+ tick subscription. `fx_rate` converts local currency → USD.
+| Package | Function | Description |
+|---------|----------|-------------|
+| **desktool** | `get_lot_size()` | Returns lot size dict for universe RICs |
+| **desktool** | `get_trading_day_type()` | Returns `0` / `0.5` / `1` per market |
+| **desktool** | feed thread objects | Thread objects for risk appetite, live price, inventory, fills subscriptions |
+| **desktool** | quote injection | Send dispatch DataFrame to KDB+ (to be wired later) |
+| **alpha project** | queue push | External project pushes alpha DataFrames into per-market queue |
 
 ---
 
-## 7. Configuration
-
-### 7.1 TOML Structure (`configs/config.toml`)
-
-The market name is the TOML section name. All settings for that market live under it — no separate `[market_settings]` section.
-
-```toml
-[HK]
-timezone = "Asia/Hong_Kong"
-universe_file = "configs/hk_universe.csv"
-sessions = ["09:30-12:00", "13:00-16:00"]
-order_valid_time = 5          # minutes
-refresh_buffer = 15           # seconds
-full_batch_interval = 10      # minutes between full batch updates
-min_dispatch_interval = 5     # seconds between any two dispatches
-single_name_cap = 50000
-max_buy_notional = 10000000   # USD
-max_sell_notional = 10000000  # USD
-max_staleness = 30            # seconds
-partial_change_threshold = 0.10   # 10% change required for partial update
-refill_fill_threshold = 0.50      # 50% filled to trigger refill
-
-[overrides.stock_limit.HK]
-"0005.HK" = 100000      # HSBC gets higher limit
-"0700.HK" = 20000       # Tencent gets lower limit
-```
-
-### 7.2 Universe CSV (`configs/hk_universe.csv`)
-
-```csv
-ric
-0005.HK
-0700.HK
-9988.HK
-1299.HK
-0388.HK
-```
-
-### 7.3 Hierarchical Override Resolution
-
-`MarketConfig.get_stock_limit(ric)` checks `[overrides.stock_limit.{market}]` first, falls back to the market's `single_name_cap` default.
-
----
-
-## 8. GUI Dashboard
-
-Runs in a separate `multiprocessing.Process` to ensure zero impact on trading latency.
-
-### 8.1 Data Flow
-
-Engine → `mp.Queue` → `EngineSnapshot` (contains DataFrame copy) → GUI polls every 100ms via `QTimer`
-
-### 8.2 Layout
-
-| Area | Widget | Content |
-|------|--------|---------|
-| Top banner | `ScalingBanner` | Global buy/sell scaling factors. Orange when < 1.0 |
-| Main table | `QTableWidget` | RIC, Bid State, Bid Qty, Offer State, Offer Qty, Last Price, Inventory, Alpha, PnL, Filled Since Dispatch |
-| Alpha cells | `AlphaItem` | Color-coded: green (> 0.05), red (< -0.05) |
-| Right panel | `PnlPanel` | Mark-to-market PnL (Local + USD aggregate) |
-| Right panel | `TradeFlowLog` | Scrolling fill events |
-| Status bar | `QStatusBar` | Session active/inactive, countdown, feed status |
-
----
-
-## 9. Concurrency Architecture
-
-```
-Main Process
-├── asyncio event loop (main thread)
-│   └── TradingEngine.run()
-│       └── asyncio.Queue ← (event_type, DataFrame)
-│
-├── Thread: feed-risk_appetite   (daemon) ─┐
-├── Thread: feed-live_price      (daemon) ─┤ All push via
-├── Thread: feed-inventory       (daemon) ─┤ loop.call_soon_threadsafe()
-├── Thread: feed-fills           (daemon) ─┤
-├── Thread: feed-alpha           (daemon) ─┘
-├── Thread: heartbeat-monitor    (daemon)
-│
-└── GUI Process (multiprocessing, daemon)
-    └── mp.Queue ← EngineSnapshot (with DataFrame copy)
-```
-
----
-
-## 10. External Dependencies (stubs)
-
-| Package | Usage | Status |
-|---------|-------|--------|
-| **desktool** | Risk appetite, inventory, fills subscriptions + lot sizes + quote injection to KDB+ | Stub — `_subscribe()` is a no-op |
-| **alphaflow** | Alpha signal subscription | Stub — `_subscribe()` is a no-op |
-
-All feed adapters have `on_update(df)` callbacks ready for wiring.
-
----
-
-## 11. Simulator
-
-Standalone E2E test harness that replaces live feeds with randomized data.
-
-**Run:** `uv run python -m pimm.simulator configs/hk.toml [--gui] [--seed N]`
-
-| Thread | Interval | Data |
-|--------|----------|------|
-| Risk appetite | 3s | All universe RICs, random qty 500–30000, `fx_rate=0.128` |
-| Live price | 2s | All universe RICs, `last_price` ±2% jitter from base |
-| Inventory | 5s | Random 0–20000 |
-| Alpha | 20s | Random [-0.3, 0.3] |
-| Fills | 4s | 1–4 random RICs, random side, qty 100–5000 |
-
-**Config overrides:** sessions 00:00–23:59, notional caps $500k, full_batch_interval 2min, min_dispatch_interval 5s.
-
-**Logs:** `logs/sim_<YYYYMMDD_HHMMSS>.log`
-
----
-
-## 12. Key Data Types
-
-### Universe DataFrame (central state — one row per RIC)
-
-```
-ric (index)                | str      | Stock identifier
-lot_size                   | int      | Minimum lot from desktool
-stock_limit                | float    | Single-name limit (from config)
-buy_state                  | str      | Buy price type (e.g. "BEST_BID")
-sell_state                 | str      | Sell price type
-buy_raw                    | float    | Raw buy qty from risk appetite
-sell_raw                   | float    | Raw sell qty from risk appetite
-last_price                 | float    | Stock price in local currency
-fx_rate                    | float    | Local → USD conversion rate
-alpha                      | float    | Alpha signal ∈ [-1, 1]
-inventory                  | float    | Current position
-live_buy_qty               | float    | Currently dispatched buy qty
-live_sell_qty              | float    | Currently dispatched sell qty
-last_sent_time             | datetime | Last dispatch time for this stock
-filled_buy_since_dispatch  | float    | Cumulative buy fills since last full batch
-filled_sell_since_dispatch | float    | Cumulative sell fills since last full batch
-pnl_buy_qty                | float    | Cumulative bought qty today (reset on session start)
-pnl_buy_cost               | float    | Cumulative buy cost today
-pnl_sell_qty               | float    | Cumulative sold qty today (reset on session start)
-pnl_sell_revenue           | float    | Cumulative sell revenue today
-```
+## 9. Key Data Types
 
 ### EngineSnapshot (pushed to GUI via mp.Queue)
 
-```python
-universe: pd.DataFrame          # copy of universe DataFrame
-buy_scaling: float
-sell_scaling: float
-recent_fills: list[TradeFill]
-session_active: bool
-session_end_countdown: float | None
+```
+markets: dict[str, pd.DataFrame]   # market_name -> DataFrame copy
+scaling: dict[str, tuple]           # market_name -> (buy_scaling, sell_scaling)
+recent_fills: list[TradeFill]       # recent fills across all markets
+session_status: dict[str, bool]     # market_name -> active flag
+session_countdowns: dict[str, float | None]
 feed_status: dict[str, str]
 timestamp: datetime
 ```
 
 ### TradeFill
 
-```python
+```
 ric: str
-side: Side                      # BUY / SELL
+side: Side (BUY / SELL)
 fill_qty: float
 fill_price: float
 timestamp: datetime
@@ -515,54 +446,113 @@ timestamp: datetime
 
 ---
 
-## 13. Test Coverage
+## 10. Simulator
 
-**68 tests, 0 lint errors**
+Standalone E2E test harness that replaces live feeds with randomized data.
 
-| File | Tests | Covers |
-|------|-------|--------|
-| `test_config.py` | 6 | Config loading, session parsing, defaults, overrides, notional limits |
-| `test_sizing.py` | 22 | Alpha skew, single-name cap, notional scaling, inventory constraint, lot rounding, full pipeline |
-| `test_fills.py` | 9 | Fill aggregation, VWAP, state feed updates, live price updates, unknown RIC handling |
-| `test_refill.py` | 9 | Aggregate fills, process_fill, freshness guard eligibility, mark_dispatched |
-| `test_session.py` | 9 | Session windows, boundaries, countdown, refresh timing |
-| `test_pnl.py` | 10 | PnL accumulation, formula (buy/sell/mixed), price recomputation, daily reset, aggregate (local + USD) |
+**Run:** `uv run python -m pimm.simulator configs/config.cfg [--seed N]`
+
+| Thread | Interval | Data |
+|--------|----------|------|
+| Risk appetite | 3s | All RICs across markets, random qty, fx_rate per market |
+| Live price | 2s | All RICs, ±2% jitter from base |
+| Inventory | 5s | Random 0–20000 |
+| Alpha | 20s | Random [-0.3, 0.3] per market |
+| Fills | 4s | 1–4 random RICs, random side/qty |
+
+**Config overrides:** sessions 00:00–23:59, notional caps $500k, full_batch_interval 2min, dispatch_cooldown 5s.
 
 ---
 
-## 14. Current Status
+## 11. Implementation Tasks
 
-### Completed (v0.2.0 — Full Rewrite, Mar 2026)
+### Phase 1: Infrastructure Changes
+- [ ] Create `configs/config.cfg` from current `config.toml` (configparser format)
+- [ ] Rewrite `pimm/config.py` (moved from `configs/config.py`) to use `configparser`
+  - [ ] Load all market sections from one file
+  - [ ] Support `[{market}.overrides]` for per-stock limits
+  - [ ] Add `reload_config()` for runtime reload
+  - [ ] Add `load_all_markets()` returning dict of MarketConfig
+- [ ] Move `pimm/types.py` → `pimm/utils/quotetypes.py`, update all imports
+- [ ] Remove `pimm/utils/lots.py` (lot sizes from desktool dict)
+- [ ] Remove `configs/__init__.py`, `configs/hk.toml`, `configs/config.toml`
+- [ ] Update `pyproject.toml` if needed
 
-- [x] Full rewrite to flat layout (`pimm/` at root, no `src/`)
-- [x] No type hints, inline comments, per python-CLAUDE.md conventions
-- [x] New TOML config structure (`[HK]` sections, `configs/config.toml`)
-- [x] CSV-based stock universe (`configs/hk_universe.csv`)
-- [x] DataFrame-centric architecture (universe DataFrame replaces StockState)
-- [x] Vectorized 4-step sizing pipeline (pandas vector ops, no per-stock loops)
-- [x] Inventory constraint at dispatch time (post-pipeline)
-- [x] Partial change threshold (`partial_change_threshold`, 10%)
-- [x] New refill logic (fill accumulation, threshold trigger, optimal cap)
-- [x] Fill counters reset only on full batch
+### Phase 2: Multi-Market Engine
+- [ ] Refactor `TradingEngine` to manage multiple markets
+  - [ ] Dict of per-market `StateManager` instances
+  - [ ] Per-market dispatch timing (last_full_batch, last_dispatch, cooldown)
+  - [ ] Per-market session monitor (timezone, windows, active flag)
+  - [ ] Feed event routing by RIC membership
+- [ ] Add trading day type check (desktool.get_trading_day_type(), returns 0/0.5/1)
+- [ ] Per-market session logic (full/half/non-trading day)
+- [ ] GUI command queue processing (start/stop/reload per market)
+
+### Phase 3: Feed Adapter Redesign
+- [ ] Rewrite `FeedAdapter` base class
+  - [ ] Accept desktool thread object (optional)
+  - [ ] Accept subscription params (service_name, table_name, recovery/filter query/params)
+  - [ ] Start: start desktool thread + start queue polling
+  - [ ] Stop: stop thread + stop polling
+  - [ ] Keep `on_update()` for simulator path
+- [ ] Update concrete feed classes with subscription params
+- [ ] Alpha feed: queue-only (no thread), per-market instances
+
+### Phase 4: GUI Redesign
+- [ ] New layout: top-left controls, top-right summary, middle table, bottom fills
+- [ ] Country control panel (all markets visible)
+  - [ ] Trading day type display
+  - [ ] Session window display
+  - [ ] Start/Stop button per market
+  - [ ] "View Params" button (read-only popup)
+  - [ ] "Reload Params" button (sends reload command to engine)
+- [ ] Global summary panel (scaling, notional, PnL)
+- [ ] Quoting table with country filter
+  - [ ] Combined optimal + live quoting info
+  - [ ] Country filter dropdown
+- [ ] Trade fills panel with country filter
+- [ ] GUI always starts (remove `--no-gui` / make `--gui` default)
+- [ ] Wire command queue (GUI → engine)
+
+### Phase 5: Update Tests
+- [ ] Update `test_config.py` for configparser format + multi-market
+- [ ] Update `test_feeds.py` for new FeedAdapter init signature
+- [ ] Update `test_fills.py`, `test_pnl.py` for multi-market state
+- [ ] Add tests for feed routing by RIC
+- [ ] Add tests for GUI commands (start/stop/reload)
+- [ ] Update `conftest.py` fixtures
+
+### Phase 6: Simulator Update
+- [ ] Update simulator for multi-market
+- [ ] GUI always launches in simulator mode
+- [ ] Simulate multiple markets with different RIC sets
+
+---
+
+## 12. Current Status
+
+### Completed (v0.2.0)
+- [x] DataFrame-centric architecture (single universe DataFrame per market)
+- [x] Vectorized 4-step sizing pipeline
 - [x] Two-mode dispatch (full batch + partial update)
-- [x] Dispatch cooldown (`min_dispatch_interval`)
-- [x] Partial → full batch auto-promotion on notional breach
-- [x] Feed adapter framework (thread → asyncio bridge, stubs)
-- [x] Heartbeat monitor with winsound alert
+- [x] Refill logic (accumulation, threshold, cap)
+- [x] Feed adapter framework (queue-based)
+- [x] Mark-to-market PnL (per-stock + aggregate)
 - [x] Session management (start/end/cancel-all)
-- [x] GUI dashboard reads from DataFrame in EngineSnapshot
-- [x] ScalingBanner, AlphaItem, PnlPanel, TradeFlowLog widgets
-- [x] Simulator harness with 4 sim threads + GUI support
-- [x] 68 tests, 0 lint errors
-- [x] Test dir: `test/` (not `tests/`)
+- [x] GUI dashboard (single market)
+- [x] Simulator harness (single market)
+- [x] 86 tests, 0 lint errors
 
-### Remaining TODO
+### In Progress (v0.3.0 — Multi-Market + GUI Control)
+- [ ] Config migration (TOML → configparser)
+- [ ] Multi-market engine (shared loop, per-market state)
+- [ ] Feed adapter redesign (desktool thread objects)
+- [ ] GUI as primary control interface
+- [ ] GUI layout redesign (controls + summary + table + fills)
+- [ ] File reorganization (types → quotetypes, remove lots.py, move config.py)
 
-- [ ] Wire desktool real subscriptions into feed adapters
-- [ ] Wire alphaflow real subscription
-- [ ] Wire `HeartbeatMonitor.record_update()` calls from feed adapters
-- [x] Mark-to-market PnL (per-stock + aggregate local/USD, daily reset on session start)
-- [ ] Wire KDB+ real-time tick subscription into LivePriceFeed
-- [ ] Wire `TradeFlowLog.add_dispatch_event()` from engine
-- [ ] Possibly replace alpha skew formula
-- [ ] Manual GUI testing with `--gui` flag
+### Future
+- [ ] Wire desktool real subscriptions
+- [ ] Wire alpha project real subscriptions
+- [ ] Wire HeartbeatMonitor.record_update() from feeds
+- [ ] Wire TradeFlowLog.add_dispatch_event() from engine

@@ -9,6 +9,7 @@ class StateManager:
     # Manages the universe DataFrame — single source of truth for all per-stock state
 
     COLUMNS = [
+        "quote_status", "remark",
         "lot_size", "stock_limit",
         "buy_state", "sell_state",
         "buy_raw", "sell_raw",
@@ -21,21 +22,26 @@ class StateManager:
     ]
 
     def __init__(self, ric_list, lot_sizes, config):
-        # Build universe DataFrame from RIC list, lot sizes, and config
-        # Only RICs with valid lot sizes are included
-        valid_rics = []
-        for ric in ric_list:
-            if ric in lot_sizes:
-                valid_rics.append(ric)
-            else:
-                logger.warning("RIC %s has no lot size, skipping", ric)
+        # Build universe DataFrame from RIC list
+        # All RICs from CSV are included — none filtered out
+        self.df = pd.DataFrame(index=pd.Index(ric_list, name="ric"))
 
-        self.df = pd.DataFrame(index=pd.Index(valid_rics, name="ric"))
+        # Quote status and remark
+        self.df["quote_status"] = True
+        self.df["remark"] = ""
 
         # Static columns from startup
-        self.df["lot_size"] = [lot_sizes[r] for r in valid_rics]
+        for ric in ric_list:
+            if ric in lot_sizes:
+                self.df.at[ric, "lot_size"] = lot_sizes[ric]
+            else:
+                self.df.at[ric, "lot_size"] = float("nan")
+                self.df.at[ric, "quote_status"] = False
+                self.df.at[ric, "remark"] = "no lot size"
+                logger.warning("RIC %s has no lot size, quote_status=False", ric)
+
         self.df["stock_limit"] = [
-            float(config.get_stock_limit(r)) for r in valid_rics
+            float(config.get_stock_limit(r)) for r in ric_list
         ]
 
         # Dynamic columns initialized to defaults
@@ -57,9 +63,12 @@ class StateManager:
         self.df["pnl_sell_qty"] = 0.0
         self.df["pnl_sell_revenue"] = 0.0
 
+    @property
+    def quotable(self):
+        # Return DataFrame slice of only quotable stocks
+        return self.df[self.df["quote_status"] == True]  # noqa: E712
+
     def update_risk_appetite(self, feed_df):
-        # Merge risk appetite data into universe DataFrame
-        # feed_df columns: ric, buy_state, buy_qty, sell_state, sell_qty, fx_rate
         for _, row in feed_df.iterrows():
             ric = str(row["ric"])
             if ric not in self.df.index:
@@ -72,7 +81,6 @@ class StateManager:
                 self.df.at[ric, "fx_rate"] = float(row["fx_rate"])
 
     def update_live_price(self, feed_df):
-        # Merge live price data: ric, last_price
         for _, row in feed_df.iterrows():
             ric = str(row["ric"])
             if ric not in self.df.index:
@@ -80,7 +88,6 @@ class StateManager:
             self.df.at[ric, "last_price"] = float(row["last_price"])
 
     def update_inventory(self, feed_df):
-        # Merge inventory data: ric, inventory
         for _, row in feed_df.iterrows():
             ric = str(row["ric"])
             if ric not in self.df.index:
@@ -88,7 +95,6 @@ class StateManager:
             self.df.at[ric, "inventory"] = float(row["inventory"])
 
     def update_alpha(self, feed_df):
-        # Merge alpha data: ric, alpha (clamped to [-1, 1])
         for _, row in feed_df.iterrows():
             ric = str(row["ric"])
             if ric not in self.df.index:
@@ -97,8 +103,7 @@ class StateManager:
             self.df.at[ric, "alpha"] = alpha
 
     def get_active_rics(self):
-        # Return RICs that have received risk appetite data
-        mask = self.df["buy_raw"] > 0
+        mask = (self.df["buy_raw"] > 0) & (self.df["quote_status"] == True)  # noqa: E712
         return list(self.df.index[mask])
 
     def reset_pnl(self):
@@ -108,5 +113,4 @@ class StateManager:
         self.df["pnl_sell_revenue"] = 0.0
 
     def copy(self):
-        # Return a copy of the universe DataFrame (for GUI snapshot)
         return self.df.copy()

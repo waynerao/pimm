@@ -1,8 +1,8 @@
-# Tests for config loading
+# Tests for config loading (configparser format)
 
 from pathlib import Path
 
-from configs.config import load_config, load_universe
+from pimm.config import load_all_markets, load_config, load_universe
 
 
 class TestConfigLoading:
@@ -44,6 +44,11 @@ class TestConfigLoading:
         config = load_config(config_path, "HK")
         assert config.partial_change_threshold == 0.10
         assert config.refill_fill_threshold == 0.50
+
+    def test_load_all_markets(self, config_path):
+        configs = load_all_markets(config_path)
+        assert "HK" in configs
+        assert configs["HK"].name == "HK"
 
 
 class TestUniverseLoading:

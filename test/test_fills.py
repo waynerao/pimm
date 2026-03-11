@@ -55,6 +55,34 @@ class TestFillAccumulation:
         accumulate_fills(state_mgr.df, fills)
 
 
+class TestQuoteStatus:
+    def test_all_rics_included(self, hk_config):
+        from pimm.engine.state import StateManager
+        rics = ["0005.HK", "0700.HK", "MISSING.HK"]
+        lots = {"0005.HK": 400, "0700.HK": 100}
+        mgr = StateManager(rics, lots, hk_config)
+        assert len(mgr.df) == 3
+        assert "MISSING.HK" in mgr.df.index
+
+    def test_missing_lot_size_sets_status_off(self, hk_config):
+        from pimm.engine.state import StateManager
+        rics = ["0005.HK", "MISSING.HK"]
+        lots = {"0005.HK": 400}
+        mgr = StateManager(rics, lots, hk_config)
+        assert mgr.df.at["0005.HK", "quote_status"] == True  # noqa: E712
+        assert mgr.df.at["MISSING.HK", "quote_status"] == False  # noqa: E712
+        assert mgr.df.at["MISSING.HK", "remark"] == "no lot size"
+
+    def test_quotable_excludes_off(self, hk_config):
+        from pimm.engine.state import StateManager
+        rics = ["0005.HK", "MISSING.HK"]
+        lots = {"0005.HK": 400}
+        mgr = StateManager(rics, lots, hk_config)
+        quotable = mgr.quotable
+        assert "0005.HK" in quotable.index
+        assert "MISSING.HK" not in quotable.index
+
+
 class TestStateManagerFeedUpdates:
     def test_risk_appetite_update(self, state_mgr, risk_df):
         state_mgr.update_risk_appetite(risk_df)

@@ -1,13 +1,14 @@
-# Live price feed adapter (KDB+ tick subscription via desktool)
+# Live price feed adapter (desktool thread, KDB+ tick)
 
 from pimm.feeds.base import FeedAdapter
 
 
 class LivePriceFeed(FeedAdapter):
 
-    def __init__(self, engine_push):
-        super().__init__(event_type="live_price", engine_push=engine_push)
-
-    def _subscribe(self):
-        # TODO: desktool.subscribe(self._data_queue, feed_type="live_price", ...)
-        pass
+    def __init__(self, engine_push, thread=None, **kwargs):
+        super().__init__(
+            event_type="live_price",
+            engine_push=engine_push,
+            thread=thread,
+            **kwargs,
+        )

@@ -5,7 +5,7 @@
 **Core Workflow:**
 1. **Initialization:** Load market-specific TOML config; load stock universe from CSV; query lot sizes from desktool.
 2. **State:** Maintain a universe DataFrame (one row per RIC) as the single source of truth for all per-stock state.
-3. **Feeds:** Subscribe to KDB+ (Risk Appetite, Inventory, Fills) and Alpha feeds. Feed updates merge into the DataFrame.
+3. **Feeds:** Subscribe to KDB+ (Risk Appetite, Live Price, Inventory, Fills) and Alpha feeds via queue-based adapters. Feed updates merge into the DataFrame.
 4. **Quoting:** Compute sizes via a vectorized 4-step sizing pipeline. Apply inventory constraint at dispatch time. Dispatch in two modes: scheduled full batch and reactive partial update.
 5. **Monitoring:** A separate process GUI displays live status and PnL.
 
@@ -84,12 +84,12 @@ All per-stock state lives in a single pandas DataFrame indexed by `ric`. This re
 
 ## 5. Feed Interfaces
 
-All feeds push `pd.DataFrame` via threaded callbacks into the engine's async queue.
+All feeds use a queue-based adapter pattern (`FeedAdapter` base class). In production, `desktool.subscribe()` pushes DataFrames into a `queue.Queue`; the adapter thread polls the queue and forwards each DataFrame to the engine's asyncio queue via `call_soon_threadsafe`. In simulation, sim threads call `feed.on_update(df)` directly.
 
 | Feed | Source | Columns |
 |------|--------|---------|
 | Risk Appetite | desktool (KDB+) | `ric, buy_state, buy_qty, sell_state, sell_qty, fx_rate` |
-| Live Price | KDB+ (tick) | `ric, last_price` |
+| Live Price | desktool (KDB+) | `ric, last_price` |
 | Inventory | desktool (KDB+) | `ric, inventory` |
 | Trade Fills | desktool (KDB+) | `ric, side, fill_qty, fill_price, timestamp` |
 | Alpha | alphaflow | `ric, alpha` (float in [-1, 1]) |
