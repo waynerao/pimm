@@ -42,9 +42,9 @@ def state_mgr(ric_list, lot_sizes, hk_config):
 def risk_df():
     return pd.DataFrame({
         "ric": ["0005.HK", "0700.HK", "9988.HK"],
-        "buy_state": ["best_bid", "best_bid", "mid"],
+        "buy_state": ["best_bid", "best_bid", "best_bid"],
         "buy_qty": [1000.0, 500.0, 300.0],
-        "sell_state": ["best_offer", "best_offer", "mid"],
+        "sell_state": ["best_ask", "best_ask", "best_ask"],
         "sell_qty": [2000.0, 800.0, 400.0],
         "fx_rate": [0.128, 0.128, 0.128],
     })
@@ -88,7 +88,6 @@ def fills_df():
 def make_config(sessions):
     return MarketConfig(
         name="TEST",
-        timezone="Asia/Hong_Kong",
         sessions=[SessionWindow.parse(s) for s in sessions],
         order_valid_time=5,
         refresh_buffer=15,

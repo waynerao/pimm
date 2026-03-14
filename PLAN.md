@@ -5,15 +5,16 @@
 A multi-market dark pool market-making engine with dynamic pricing, controlled and monitored through a real-time GUI dashboard.
 
 **Core workflow:**
-1. Launch GUI — the primary control and monitoring interface
-2. Load config.cfg (all markets); per market: load universe CSV, query lot sizes from desktool
-3. Check trading day type per market (desktool); auto-enable/disable accordingly
-4. Initialize per-market universe DataFrame — single source of truth for all per-stock state
-5. Subscribe to shared feeds (risk appetite, live price, inventory, fills) via desktool threads
-6. Subscribe to per-market alpha feeds via queue (external alpha project)
-7. Compute quote sizes through a vectorized 4-step sizing pipeline
-8. Dispatch quotes in two modes: scheduled full batch and reactive partial update
-9. GUI displays live status, trade fills, PnL; provides start/stop, param view/reload controls
+1. Start web server (FastAPI + WebSocket) — the primary control and monitoring interface
+2. Send access link via Outlook email (auto-send on startup, configurable recipients)
+3. Load config.cfg (all markets); per market: load universe CSV, query lot sizes from desktool
+4. Check trading day type per market (desktool); auto-enable/disable accordingly
+5. Initialize per-market universe DataFrame — single source of truth for all per-stock state
+6. Subscribe to shared feeds (risk appetite, live price, fills) via desktool threads
+7. Subscribe to per-market feeds (inventory, alpha) — start/stop with each country
+8. Compute quote sizes through a vectorized 4-step sizing pipeline
+9. Dispatch quotes in two modes: scheduled full batch and reactive partial update
+10. Web dashboard displays live status, trade fills, PnL, delta/beta, console log; provides start/stop, param view/reload controls
 
 ---
 
@@ -34,11 +35,15 @@ A multi-market dark pool market-making engine with dynamic pricing, controlled a
       - Full day: all configured sessions
       - Half day: first (morning) session only
       - Non-trading: disabled by default (GUI can override)
-4. Start shared feed threads (risk appetite, live price, inventory, fills)
+4. Start shared feed threads (risk appetite, live price, fills)
    - Desktool provides thread objects; engine controls start/stop
-5. Start per-market alpha feed queue polling threads
+5. Per-market feeds (inventory, alpha) created but NOT started yet
+   - Started when market is enabled (start command or auto-enable)
 6. Start heartbeat monitor
-7. Start shared async engine loop (manages all markets)
+7. Start FastAPI web server (same asyncio loop)
+8. Generate token, send access link via Outlook email
+9. Start shared async engine loop (manages all markets)
+10. Start periodic delta/beta info query (configurable interval)
 ```
 
 ### 2.2 Universe DataFrame (per market)
@@ -61,7 +66,7 @@ All per-stock state lives in a single pandas DataFrame per market, indexed by `r
 | `last_price` | live price feed | `update_live_price()` | Stock price in local currency |
 | `fx_rate` | risk appetite feed | `update_risk_appetite()` | Local currency → USD |
 | `alpha` | alpha feed | `update_alpha()` | Alpha signal ∈ [-1, 1] |
-| `inventory` | inventory feed | `update_inventory()` | Current position |
+| `inventory` | inventory feed (per-market) | `update_inventory()` | Current position |
 | `live_buy_qty` | dispatch | `_dispatch_*()` | Currently dispatched buy quantity |
 | `live_sell_qty` | dispatch | `_dispatch_*()` | Currently dispatched sell quantity |
 | `last_sent_time` | dispatch | `_dispatch_*()` | Timestamp of last dispatch |
@@ -72,20 +77,21 @@ All per-stock state lives in a single pandas DataFrame per market, indexed by `r
 | `pnl_sell_qty` | fill event | `_handle_fills()` | Cumulative sold qty today |
 | `pnl_sell_revenue` | fill event | `_handle_fills()` | Cumulative sell revenue today |
 
-**Thread safety:** No locks needed. Feed threads push into `asyncio.Queue` via `call_soon_threadsafe()`. Only the engine's async loop reads/writes DataFrames. GUI receives copies via `mp.Queue`.
+**Thread safety:** No locks needed. Feed threads push into `asyncio.Queue` via `call_soon_threadsafe()`. Only the engine's async loop reads/writes DataFrames. Web UI receives copies via WebSocket snapshots.
 
 ### 2.3 Steady-State Event Loop
 
 ```
 Feed event arrives (risk appetite / live price / inventory / alpha / fill)
   │
-  ├─ Route to correct market by RIC membership
+  ├─ Shared feeds: route to correct market by RIC membership
+  ├─ Per-market feeds: already tagged with market name
   │
   ├─ Merge feed data into market's universe DataFrame
   │
   ├─ If market's session is active → run dispatch decision logic for that market
   │
-  └─ Push GUI snapshot (copies of all market DataFrames, non-blocking)
+  └─ Push snapshot via WebSocket (copies of all market DataFrames, non-blocking)
 ```
 
 ### 2.4 Dispatch Decision Logic (per market)
@@ -210,7 +216,6 @@ Uses Python `configparser`. One section per market, all in one file.
 
 ```ini
 [HK]
-timezone = Asia/Hong_Kong
 universe_file = configs/hk_universe.csv
 sessions = 09:30-12:00,13:00-16:00
 order_valid_time = 5
@@ -223,15 +228,16 @@ max_sell_notional = 10000000
 max_staleness = 30
 partial_change_threshold = 0.10
 refill_fill_threshold = 0.50
+alpha_enabled = true
 
 [HK.overrides]
 0005.HK = 100000
 0700.HK = 20000
 
 [TW]
-timezone = Asia/Taipei
 universe_file = configs/tw_universe.csv
 sessions = 09:00-13:30
+alpha_enabled = false
 ...
 ```
 
@@ -271,48 +277,45 @@ sessions = 09:00-13:30
 **Stop:** stops the desktool thread + stops polling.
 **Simulator:** calls `feed.on_update(df)` directly (bypasses queue).
 
-### 4.2 Feed Table
+### 4.2 Inventory & Alpha Feeds (Per-Country Start/Stop)
 
-| Feed | Source | Shared | Thread | Columns |
-|------|--------|--------|--------|---------|
-| Risk Appetite | desktool (KDB+) | Yes | desktool | `ric, buy_state, buy_qty, sell_state, sell_qty, fx_rate` |
-| Live Price | desktool (KDB+) | Yes | desktool | `ric, last_price` |
-| Inventory | desktool (KDB+) | Yes | desktool | `ric, inventory` |
-| Trade Fills | desktool (KDB+) | Yes | desktool | `ric, side, fill_qty, fill_price, timestamp` |
-| Alpha | external project | Per-market | None | `ric, alpha` (float in [-1, 1]) |
+**Inventory feed** (`inventory.py`): One instance managing all countries. Each country has its own desktool thread subscription. `start_market(market)` / `stop_market(market)` control per-country subscriptions.
 
-Shared feeds serve all markets; events routed by RIC membership.
+**Alpha feed** (`alpha.py`): One instance managing all countries. Each country has its own queue. `start_market(market)` / `stop_market(market)` control per-country polling.
+
+Events tagged with market name — no RIC-based routing needed.
+
+### 4.3 Feed Table
+
+| Feed | Source | Per-Country Control | Columns |
+|------|--------|---------------------|---------|
+| Risk Appetite | desktool (KDB+) | No — always on | `ric, buy_state, buy_qty, sell_state, sell_qty, fx_rate` |
+| Live Price | desktool (KDB+) | No — always on | `ric, last_price` |
+| Trade Fills | desktool (KDB+) | No — always on | `ric, side, fill_qty, fill_price, timestamp` |
+| Inventory | desktool (KDB+) | Yes — start/stop with country | `ric, inventory` |
+| Alpha | external project | Yes — start/stop with country | `ric, alpha` (float in [-1, 1]) |
+
+Shared feeds (Risk Appetite, Live Price, Fills) serve all markets; events routed by RIC membership. Inventory and Alpha manage per-country subscriptions internally and tag events with market name.
+
+### 4.4 Delta/Beta Info (Periodic Query)
+
+`desktool.get_delta_beta_info()` — global, returns a single-line string. Polled at `delta_beta_interval` seconds (configurable in `[web]` section). Displayed in web dashboard's info panel.
 
 ---
 
-## 5. GUI Dashboard
+## 5. Web Dashboard
 
-### 5.1 Data Flow
+Full layout and UI details are documented in **[web-dashboard.md](web-dashboard.md)**.
 
-- Engine → `mp.Queue` → `EngineSnapshot` (per-market DataFrame copies + summary) → GUI polls via `QTimer`
-- GUI → `mp.Queue` → commands (start/stop, reload config) → engine processes
-
-### 5.2 Layout
-
-**Top Left — Country Control Panel (static, all countries visible):**
-- Per country row: market name, trading day type, session window, start/stop button
-- Per country: "View Params" button (read-only popup), "Reload Params" button (re-reads config.cfg)
-
-**Top Right — Global Summary:**
-- Per-market scaling factors (buy/sell)
-- Total notional by side (USD)
-- Aggregate PnL (local + USD)
-
-**Middle — Quoting Table (with country filter):**
-- Combined optimal quotes + current live quoting info per stock
-- Country filter dropdown to narrow view
-- Columns: RIC, Bid State, Bid Qty, Offer State, Offer Qty, Last Price, Inventory, Alpha, PnL, Filled Since Dispatch
-
-**Bottom — Trade Fills (filtered by country filter above):**
-- Scrolling list of recent fill events
-- Filtered by same country selection
-
-**Theme:** Dark mode (`pyqtdarktheme`)
+**Summary of key features:**
+- FastAPI + uvicorn in same asyncio loop, WebSocket for real-time data + commands
+- Token-based auth (UUID in URL), sent via Outlook email on startup
+- Three-section layout: Control+Summary | Delta/Beta+Log | Quoting+Trades tabs
+- Draggable column reordering (persisted to localStorage)
+- Resizable columns and panels (flex-ratio based)
+- Country dropdown + RIC regex filters
+- RIC sorting by region then alphabetically
+- Dark theme, single-file HTML/CSS/JS
 
 ---
 
@@ -321,35 +324,41 @@ Shared feeds serve all markets; events routed by RIC membership.
 ### 6.1 Concurrency
 
 ```
-Main Process
+Single Process
 ├── asyncio event loop (main thread)
-│   └── TradingEngine.run()
-│       ├── Per-market state (DataFrame, dispatch timing, session)
-│       └── asyncio.Queue ← (event_type, market, DataFrame)
+│   ├── TradingEngine.run()
+│   │   ├── Per-market state (DataFrame, dispatch timing, session)
+│   │   └── asyncio.Queue ← (event_type, market, DataFrame)
+│   │
+│   └── FastAPI (uvicorn)
+│       ├── GET / → serves static HTML/JS
+│       ├── WebSocket /ws?token={uuid}
+│       │   ├── Server → Client: JSON snapshots (100ms)
+│       │   └── Client → Server: commands (start/stop/reload)
+│       └── Token validation middleware
 │
-├── Thread: feed-risk_appetite  (shared, desktool thread) ─┐
-├── Thread: feed-live_price     (shared, desktool thread) ─┤ All push via
-├── Thread: feed-inventory      (shared, desktool thread) ─┤ loop.call_soon_threadsafe()
-├── Thread: feed-fills          (shared, desktool thread) ─┘
-├── Thread: feed-alpha-HK      (per-market, queue polling) ─┐
-├── Thread: feed-alpha-TW      (per-market, queue polling) ─┤
-├── Thread: heartbeat-monitor   (daemon)
+├── Thread: feed-risk_appetite  (shared, desktool) ─┐
+├── Thread: feed-live_price     (shared, desktool) ─┤ Always on, push via
+├── Thread: feed-fills          (shared, desktool) ─┘ loop.call_soon_threadsafe()
 │
-└── GUI Process (multiprocessing)
-    ├── mp.Queue ← EngineSnapshot (read)
-    └── mp.Queue → commands (write)
+├── InventoryFeed (1 instance, per-country desktool threads) ─┐ start/stop
+├── AlphaFeed    (1 instance, per-country queues)             ─┘ with country
+│
+├── Thread: heartbeat-monitor    (daemon)
+│
+└── Startup: send email with access URL via win32com (Outlook)
 ```
 
 ### 6.2 Feed Routing
 
 Shared feeds push DataFrames containing RICs from multiple markets. Engine routes each row to the correct market's DataFrame by RIC membership.
 
-### 6.3 GUI Commands
+### 6.3 Web Commands
 
-GUI sends commands to engine via `mp.Queue`:
-- `("start", market_name)` — start quoting for a market
-- `("stop", market_name)` — stop quoting for a market
-- `("reload", market_name)` — reload config from disk for a market
+Web UI sends commands to engine via WebSocket messages:
+- `{"action": "start", "market": "HK"}` — start quoting for a market
+- `{"action": "stop", "market": "HK"}` — stop quoting for a market
+- `{"action": "reload", "market": "HK"}` — reload config from disk for a market
 
 ---
 
@@ -358,12 +367,14 @@ GUI sends commands to engine via `mp.Queue`:
 ```
 pimarketmaker/
 ├── pimm.md                     # Project specification
+├── web-dashboard.md            # Web dashboard layout & UI reference
 ├── PLAN.md                     # This file
 ├── pyproject.toml              # Build config, deps, tool settings
 ├── configs/
-│   ├── config.cfg              # All markets config (configparser format)
+│   ├── config.cfg              # All markets config + [web] section
 │   ├── hk_universe.csv         # HK stock universe
-│   └── tw_universe.csv         # TW stock universe (example)
+│   ├── cn_universe.csv         # CN stock universe
+│   └── tw_universe.csv         # TW stock universe
 ├── pimm/
 │   ├── __init__.py
 │   ├── config.py               # Config loader (configparser + universe CSV)
@@ -379,17 +390,18 @@ pimarketmaker/
 │   ├── feeds/
 │   │   ├── __init__.py
 │   │   ├── base.py             # FeedAdapter base (thread mgmt + queue polling → asyncio)
-│   │   ├── risk_appetite.py    # Risk appetite feed (desktool thread)
-│   │   ├── live_price.py       # Live price feed (desktool thread)
-│   │   ├── inventory.py        # Inventory feed (desktool thread)
-│   │   ├── fills.py            # Trade fills feed (desktool thread)
-│   │   ├── alpha.py            # Alpha signal feed (queue-only, no thread)
+│   │   ├── risk_appetite.py    # Risk appetite feed (shared, desktool thread)
+│   │   ├── live_price.py       # Live price feed (shared, desktool thread)
+│   │   ├── fills.py            # Trade fills feed (shared, desktool thread)
+│   │   ├── inventory.py        # Inventory feed (per-country start/stop, desktool threads)
+│   │   ├── alpha.py            # Alpha signal feed (per-country start/stop, queues)
 │   │   └── heartbeat.py        # Feed staleness monitor
-│   ├── gui/
+│   ├── web/
 │   │   ├── __init__.py
-│   │   ├── process.py          # GUI process bootstrap (multiprocessing)
-│   │   ├── dashboard.py        # Main PyQt6 dashboard window
-│   │   └── widgets.py          # Custom widgets (ScalingBanner, PnlPanel, etc.)
+│   │   ├── server.py           # FastAPI app, WebSocket handler, token auth
+│   │   ├── email.py            # Send access link via win32com (Outlook COM)
+│   │   └── static/
+│   │       └── index.html      # Dashboard UI (HTML + CSS + JS, single file)
 │   └── utils/
 │       ├── __init__.py
 │       ├── quotetypes.py       # Shared data types (enums, TradeFill, EngineSnapshot)
@@ -414,15 +426,19 @@ pimarketmaker/
 |---------|----------|-------------|
 | **desktool** | `get_lot_size()` | Returns lot size dict for universe RICs |
 | **desktool** | `get_trading_day_type()` | Returns `0` / `0.5` / `1` per market |
-| **desktool** | feed thread objects | Thread objects for risk appetite, live price, inventory, fills subscriptions |
+| **desktool** | `get_delta_beta_info()` | Returns single-line string with delta/beta info (polled periodically) |
+| **desktool** | feed thread objects | Thread objects for risk appetite, live price, fills (shared) and inventory (per-market) |
 | **desktool** | quote injection | Send dispatch DataFrame to KDB+ (to be wired later) |
 | **alpha project** | queue push | External project pushes alpha DataFrames into per-market queue |
+| **fastapi** | web server | HTTP + WebSocket server for dashboard |
+| **uvicorn** | ASGI server | Runs FastAPI in the asyncio loop |
+| **win32com** | Outlook COM | Sends access link email on startup |
 
 ---
 
 ## 9. Key Data Types
 
-### EngineSnapshot (pushed to GUI via mp.Queue)
+### EngineSnapshot (pushed to web UI via WebSocket)
 
 ```
 markets: dict[str, pd.DataFrame]   # market_name -> DataFrame copy
@@ -431,6 +447,8 @@ recent_fills: list[TradeFill]       # recent fills across all markets
 session_status: dict[str, bool]     # market_name -> active flag
 session_countdowns: dict[str, float | None]
 feed_status: dict[str, str]
+delta_beta_info: str                # latest delta/beta info string
+console_log: list[str]             # recent CRITICAL+ log messages
 timestamp: datetime
 ```
 
@@ -448,84 +466,90 @@ timestamp: datetime
 
 ## 10. Simulator
 
-Standalone E2E test harness that replaces live feeds with randomized data.
+Standalone E2E test harness that replaces live feeds with randomized data. Simulates HK, CN, and TW markets.
 
-**Run:** `uv run python -m pimm.simulator configs/config.cfg [--seed N]`
+**Run:** `uv run python -m pimm.simulator configs/config.cfg [--seed N] [--port PORT]`
 
 | Thread | Interval | Data |
 |--------|----------|------|
 | Risk appetite | 3s | All RICs across markets, random qty, fx_rate per market |
-| Live price | 2s | All RICs, ±2% jitter from base |
-| Inventory | 5s | Random 0–20000 |
-| Alpha | 20s | Random [-0.3, 0.3] per market |
-| Fills | 4s | 1–4 random RICs, random side/qty |
+| Live price | 2s | All RICs, ±2% jitter from stub base prices |
+| Inventory | 5s | All RICs, random 0–20000 |
+| Alpha | 20s | Per-market RICs, random [-0.3, 0.3] |
+| Fills | 2–6s | Trades against dispatched quotes (lot-aligned, price with slippage) |
+
+**Fill simulator:** Realistic — fills only occur when quotes are dispatched. The dispatch callback populates a shared `live_quotes` dict; the fill simulator picks random RICs from this dict, consumes qty (up to half available), and applies ±0.2% price slippage. Cancel-all clears the dict → fills stop.
+
+**Stub data:** Base prices, FX rates (HKD/CNY/TWD→USD), and lot sizes for 15 stocks across 3 markets.
 
 **Config overrides:** sessions 00:00–23:59, notional caps $500k, full_batch_interval 2min, dispatch_cooldown 5s.
+
+**Price types:** Buy side uses only `best_bid`, sell side uses only `best_ask`.
 
 ---
 
 ## 11. Implementation Tasks
 
-### Phase 1: Infrastructure Changes
-- [ ] Create `configs/config.cfg` from current `config.toml` (configparser format)
-- [ ] Rewrite `pimm/config.py` (moved from `configs/config.py`) to use `configparser`
-  - [ ] Load all market sections from one file
-  - [ ] Support `[{market}.overrides]` for per-stock limits
-  - [ ] Add `reload_config()` for runtime reload
-  - [ ] Add `load_all_markets()` returning dict of MarketConfig
-- [ ] Move `pimm/types.py` → `pimm/utils/quotetypes.py`, update all imports
-- [ ] Remove `pimm/utils/lots.py` (lot sizes from desktool dict)
-- [ ] Remove `configs/__init__.py`, `configs/hk.toml`, `configs/config.toml`
-- [ ] Update `pyproject.toml` if needed
+### Phase 1: Infrastructure (v0.3.0 — DONE)
+- [x] Config migration (TOML → configparser), config.cfg
+- [x] Multi-market engine (shared loop, per-market state)
+- [x] Feed adapter redesign (desktool thread objects)
+- [x] File reorganization (types → quotetypes, remove lots.py, move config.py)
+- [x] Universe: all RICs included, quote_status + remark columns
+- [x] 91 tests, 0 lint errors
 
-### Phase 2: Multi-Market Engine
-- [ ] Refactor `TradingEngine` to manage multiple markets
-  - [ ] Dict of per-market `StateManager` instances
-  - [ ] Per-market dispatch timing (last_full_batch, last_dispatch, cooldown)
-  - [ ] Per-market session monitor (timezone, windows, active flag)
-  - [ ] Feed event routing by RIC membership
-- [ ] Add trading day type check (desktool.get_trading_day_type(), returns 0/0.5/1)
-- [ ] Per-market session logic (full/half/non-trading day)
-- [ ] GUI command queue processing (start/stop/reload per market)
+### Phase 2: Per-Country Feed Start/Stop (v0.4.0 — DONE)
+- [x] Update `pimm/feeds/inventory.py` — one instance, per-country start/stop
+- [x] Update `pimm/feeds/alpha.py` — one instance, per-country start/stop
+- [x] Update engine loop — `start_market()` / `stop_market()` on country enable/disable
+- [x] Update simulator to use per-country inventory + alpha
+- [x] Update tests
 
-### Phase 3: Feed Adapter Redesign
-- [ ] Rewrite `FeedAdapter` base class
-  - [ ] Accept desktool thread object (optional)
-  - [ ] Accept subscription params (service_name, table_name, recovery/filter query/params)
-  - [ ] Start: start desktool thread + start queue polling
-  - [ ] Stop: stop thread + stop polling
-  - [ ] Keep `on_update()` for simulator path
-- [ ] Update concrete feed classes with subscription params
-- [ ] Alpha feed: queue-only (no thread), per-market instances
+### Phase 3: Web Dashboard (v0.4.0 — DONE)
+- [x] Create `pimm/web/` package (server.py, email.py, static/index.html)
+- [x] FastAPI app with token auth, WebSocket, snapshot serialization, command handling
+- [x] Single-file dark theme dashboard (HTML + CSS + JS)
+- [x] Layout: Control + Summary (top) | Delta/Beta + Log (mid) | Quoting + Trades tabs (bot)
+- [x] Draggable column reordering (persisted to localStorage)
+- [x] Resizable columns (quoting table + trade summary)
+- [x] Resizable panels (flex-ratio based, adapts to browser resize)
+- [x] Country dropdown filter + RIC regex filter
+- [x] RIC sorting by region suffix then alphabetically
+- [x] Summary table: Scaling / Notional / PnL per market + total
+- [x] Trade fills list + trade summary table (buy/sell notional, PnL, ratio)
+- [x] View Params modal, Reload Params (preserves session override + active status)
+- [x] `[web]` config section (port, recipients, delta_beta_interval)
+- [x] Full layout & UI details documented in `web-dashboard.md`
 
-### Phase 4: GUI Redesign
-- [ ] New layout: top-left controls, top-right summary, middle table, bottom fills
-- [ ] Country control panel (all markets visible)
-  - [ ] Trading day type display
-  - [ ] Session window display
-  - [ ] Start/Stop button per market
-  - [ ] "View Params" button (read-only popup)
-  - [ ] "Reload Params" button (sends reload command to engine)
-- [ ] Global summary panel (scaling, notional, PnL)
-- [ ] Quoting table with country filter
-  - [ ] Combined optimal + live quoting info
-  - [ ] Country filter dropdown
-- [ ] Trade fills panel with country filter
-- [ ] GUI always starts (remove `--no-gui` / make `--gui` default)
-- [ ] Wire command queue (GUI → engine)
+### Phase 4: Remove PyQt6 (v0.4.0 — DONE)
+- [x] Delete `pimm/gui/` folder entirely
+- [x] Remove PyQt6 and pyqtdarktheme from pyproject.toml dependencies
+- [x] Replace multiprocessing + mp.Queue with WebSocket snapshot push
 
-### Phase 5: Update Tests
-- [ ] Update `test_config.py` for configparser format + multi-market
-- [ ] Update `test_feeds.py` for new FeedAdapter init signature
-- [ ] Update `test_fills.py`, `test_pnl.py` for multi-market state
-- [ ] Add tests for feed routing by RIC
-- [ ] Add tests for GUI commands (start/stop/reload)
-- [ ] Update `conftest.py` fixtures
+### Phase 5: Engine Integration (v0.4.0 — DONE)
+- [x] Wire FastAPI server into main.py and simulator.py (same asyncio loop via uvicorn)
+- [x] Add periodic delta/beta query task
+- [x] Add CRITICAL+ log handler for WebSocket
+- [x] Wire WebSocket commands to engine
+- [x] Update EngineSnapshot (market_configs, delta_beta_info, console_log)
+- [x] Realistic fill simulator (trades against dispatched quotes, lot-aligned, slippage)
+- [x] Multi-market simulation (HK, CN, TW with stub prices, fx rates, lot sizes)
 
-### Phase 6: Simulator Update
-- [ ] Update simulator for multi-market
-- [ ] GUI always launches in simulator mode
-- [ ] Simulate multiple markets with different RIC sets
+### Phase 6: Naming & Cleanup (v0.4.0 — DONE)
+- [x] Rename offer → ask throughout (PriceType, column labels, state names)
+- [x] Remove mid price type (PriceType enum: BEST_BID and BEST_ASK only)
+- [x] Buy side uses only best_bid, sell side uses only best_ask
+- [x] Last price display: 2 decimal places
+
+### Phase 7: Config & Code Quality (v0.4.0 — DONE)
+- [x] Add `alpha_enabled` config switch per country (default False)
+- [x] Skip alpha feed subscription when `alpha_enabled = false`
+- [x] Handle `alpha_enabled` transitions on config reload (start/stop feed, zero alpha)
+- [x] Remove `timezone` from config (project default: HKT)
+- [x] Trade Fills / Trade Summary split changed to 1:2 ratio with resize handle
+- [x] Compact all Python source to PEP 8 style (max 79 chars, grouped args)
+- [x] Convert all `%` string formatting to f-strings throughout codebase
+- [x] Add coding style rules to workspace `CLAUDE.md` (compact code, f-strings)
 
 ---
 
@@ -543,16 +567,35 @@ Standalone E2E test harness that replaces live feeds with randomized data.
 - [x] Simulator harness (single market)
 - [x] 86 tests, 0 lint errors
 
-### In Progress (v0.3.0 — Multi-Market + GUI Control)
-- [ ] Config migration (TOML → configparser)
-- [ ] Multi-market engine (shared loop, per-market state)
-- [ ] Feed adapter redesign (desktool thread objects)
-- [ ] GUI as primary control interface
-- [ ] GUI layout redesign (controls + summary + table + fills)
-- [ ] File reorganization (types → quotetypes, remove lots.py, move config.py)
+### Completed (v0.3.0)
+- [x] Config migration (TOML → configparser)
+- [x] Multi-market engine (shared loop, per-market state)
+- [x] Feed adapter redesign (desktool thread objects)
+- [x] GUI as primary control interface (PyQt6)
+- [x] GUI layout redesign (controls + summary + table + fills)
+- [x] File reorganization (types → quotetypes, remove lots.py, move config.py)
+- [x] Universe: all RICs included, quote_status + remark
+- [x] 91 tests, 0 lint errors
+
+### Completed (v0.4.0)
+- [x] Per-country feed start/stop (inventory + alpha: one instance each, manages all countries)
+- [x] Replace PyQt6 GUI with web dashboard (FastAPI + WebSocket + vanilla HTML/JS)
+- [x] Token-based access via email (win32com/Outlook)
+- [x] Three-section layout: Control+Summary | Delta/Beta+Log | Quoting+Trades tabs
+- [x] Draggable column reorder, resizable columns and panels
+- [x] Country + RIC regex filters, RIC sorting by region then alphabetically
+- [x] Summary table (scaling, notional, PnL per market + total)
+- [x] Trade fills list + trade summary table (notional, PnL, ratio, 1:2 split)
+- [x] Realistic fill simulator (trades against dispatched quotes)
+- [x] Multi-market simulation (HK, CN, TW)
+- [x] Rename offer → ask, remove mid price type
+- [x] Remove PyQt6 and pyqtdarktheme dependencies
+- [x] `alpha_enabled` config switch per country (default False, controls feed subscription)
+- [x] Remove `timezone` from config (project default: HKT)
+- [x] Compact PEP 8 coding style + f-strings throughout codebase
 
 ### Future
 - [ ] Wire desktool real subscriptions
 - [ ] Wire alpha project real subscriptions
 - [ ] Wire HeartbeatMonitor.record_update() from feeds
-- [ ] Wire TradeFlowLog.add_dispatch_event() from engine
+- [ ] Wire KDB+ quote injection via dispatch callback

@@ -23,7 +23,7 @@ def accumulate_fills(universe_df, fills_df):
         else:
             universe_df.at[ric, "filled_sell_since_dispatch"] += qty
 
-    logger.info("Accumulated fills for %d rows", len(fills_df))
+    logger.info(f"Accumulated fills for {len(fills_df)} rows")
 
 
 def get_refill_mask(universe_df, threshold):

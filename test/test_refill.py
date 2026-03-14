@@ -16,7 +16,7 @@ def _make_universe():
         "lot_size": [400, 100],
         "stock_limit": [50000.0, 50000.0],
         "buy_state": ["best_bid", "best_bid"],
-        "sell_state": ["best_offer", "best_offer"],
+        "sell_state": ["best_ask", "best_ask"],
         "buy_raw": [1000.0, 500.0],
         "sell_raw": [2000.0, 800.0],
         "last_price": [60.0, 380.0],

@@ -115,7 +115,7 @@ class TestStateManagerFeedUpdates:
             "ric": ["UNKNOWN.XX"],
             "buy_state": ["best_bid"],
             "buy_qty": [100.0],
-            "sell_state": ["best_offer"],
+            "sell_state": ["best_ask"],
             "sell_qty": [100.0],
             "fx_rate": [1.0],
         })

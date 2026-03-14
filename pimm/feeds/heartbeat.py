@@ -32,14 +32,11 @@ class HeartbeatMonitor:
         self._running = True
         self._thread = threading.Thread(
             target=self._monitor_loop,
-            name="heartbeat-monitor",
-            daemon=True,
+            name="heartbeat-monitor", daemon=True,
         )
         self._thread.start()
-        logger.info(
-            "Heartbeat monitor started (max_staleness=%ds)",
-            self._max_staleness,
-        )
+        ms = self._max_staleness
+        logger.info(f"Heartbeat monitor started (max_staleness={ms}s)")
 
     def stop(self):
         self._running = False
@@ -50,11 +47,12 @@ class HeartbeatMonitor:
             now = now_hkt()
             for feed_name, last in self._last_update.items():
                 elapsed = (now - last).total_seconds()
-                if elapsed > self._max_staleness and feed_name not in self._stale_feeds:
+                ms = self._max_staleness
+                if elapsed > ms and feed_name not in self._stale_feeds:
                     self._stale_feeds.add(feed_name)
                     logger.warning(
-                        "Feed '%s' is STALE (%.0fs > %ds)",
-                        feed_name, elapsed, self._max_staleness,
+                        f"Feed '{feed_name}' is STALE "
+                        f"({elapsed:.0f}s > {ms}s)"
                     )
                     self._beep()
 
@@ -66,4 +64,6 @@ class HeartbeatMonitor:
             except Exception:
                 logger.warning("winsound.Beep failed")
         else:
-            logger.warning("ALERT: Feed staleness detected (no winsound)")
+            logger.warning(
+                "ALERT: Feed staleness detected (no winsound)"
+            )

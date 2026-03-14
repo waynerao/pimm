@@ -9,7 +9,6 @@ class TestConfigLoading:
     def test_load_hk_config(self, config_path):
         config = load_config(config_path, "HK")
         assert config.name == "HK"
-        assert config.timezone == "Asia/Hong_Kong"
         assert config.order_valid_time == 5
         assert config.refresh_buffer == 15
 

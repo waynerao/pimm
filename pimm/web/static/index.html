@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pimm — Market Maker Dashboard</title>
+<style>
+:root {
+  --bg: #1e1e2e;
+  --bg2: #2a2a3c;
+  --bg3: #333348;
+  --fg: #cdd6f4;
+  --fg2: #a6adc8;
+  --green: #a6e3a1;
+  --red: #f38ba8;
+  --blue: #89b4fa;
+  --yellow: #f9e2af;
+  --border: #45475a;
+  --accent: #89b4fa;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: 'Consolas','Courier New',monospace; font-size: 13px; overflow: hidden; }
+.container { display: flex; flex-direction: column; height: 100vh; padding: 8px; gap: 0; }
+
+/* Panels */
+.panel { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 10px; overflow: auto; }
+.panel h3 { color: var(--accent); font-size: 13px; margin-bottom: 8px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+
+/* Resize handles */
+.resize-h { height: 6px; cursor: row-resize; background: transparent; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+.resize-h:hover, .resize-h.active { background: var(--border); }
+.resize-h::after { content: ''; width: 40px; height: 2px; background: var(--fg2); border-radius: 1px; }
+.resize-v { width: 6px; cursor: col-resize; background: transparent; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+.resize-v:hover, .resize-v.active { background: var(--border); }
+.resize-v::after { content: ''; height: 40px; width: 2px; background: var(--fg2); border-radius: 1px; }
+
+/* Top area */
+.top { display: flex; gap: 0; }
+.top-left { flex: 0 0 auto; overflow-y: auto; }
+.top-right { flex: 1; }
+
+/* Market controls */
+.market-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--border); }
+.market-row:last-child { border-bottom: none; }
+.market-name { font-weight: bold; min-width: 40px; color: var(--yellow); }
+.market-session { min-width: 100px; color: var(--fg2); }
+.market-status { min-width: 70px; font-weight: bold; }
+.market-status.active { color: var(--green); }
+.market-status.inactive { color: var(--fg2); }
+button { background: var(--bg3); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 3px 10px; cursor: pointer; font-family: inherit; font-size: 12px; }
+button:hover { background: var(--border); }
+
+/* Summary */
+.summary-label { color: var(--fg2); white-space: nowrap; }
+.pnl-positive { color: var(--green); }
+.pnl-negative { color: var(--red); }
+
+/* Middle area */
+.middle { flex: 0 0 200px; display: flex; gap: 0; }
+.mid-left { flex: 1; }
+.mid-right { flex: 1; }
+.log-area { height: calc(100% - 30px); overflow-y: auto; font-size: 12px; color: var(--red); background: var(--bg); padding: 4px; border-radius: 4px; }
+.delta-beta-text { padding: 8px; font-size: 14px; color: var(--yellow); }
+
+/* Bottom area — tabs */
+.bottom { flex: 1; display: flex; flex-direction: column; min-height: 100px; }
+.tab-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px 6px 0 0; }
+.tab-btn { padding: 4px 16px; cursor: pointer; border: 1px solid var(--border); border-radius: 4px; background: var(--bg3); color: var(--fg2); font-family: inherit; font-size: 12px; }
+.tab-btn.active { background: var(--accent); color: var(--bg); font-weight: bold; }
+.tab-spacer { flex: 1; }
+.tab-content { flex: 1; background: var(--bg2); border: 1px solid var(--border); border-top: none; border-radius: 0 0 6px 6px; overflow: hidden; }
+.tab-page { display: none; height: 100%; }
+.tab-page.active { display: flex; flex-direction: column; }
+
+/* Quoting table */
+.table-wrap { flex: 1; overflow: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th { position: sticky; top: 0; background: var(--bg3); color: var(--accent); padding: 4px 6px; text-align: left; border-bottom: 2px solid var(--border); white-space: nowrap; user-select: none; overflow: hidden; text-overflow: ellipsis; }
+th.resizable { position: relative; }
+th.resizable .col-resize-handle { position: absolute; right: 0; top: 0; width: 4px; height: 100%; cursor: col-resize; background: transparent; }
+th.resizable .col-resize-handle:hover { background: var(--accent); }
+th.draggable { cursor: grab; }
+th.dragging { opacity: 0.5; background: var(--accent); }
+th.drag-over { border-left: 2px solid var(--accent); }
+td { padding: 3px 6px; border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+tr:hover { background: var(--bg3); }
+.num { text-align: right; }
+.alpha-pos { background: rgba(166,227,161,0.15); }
+.alpha-neg { background: rgba(243,139,168,0.15); }
+.status-on { color: var(--green); }
+.status-off { color: var(--fg2); }
+
+/* Trades tab — split */
+.trades-split { display: flex; gap: 8px; height: 100%; padding: 8px; }
+.trades-left { flex: 1; overflow-y: auto; }
+.trades-right { flex: 2; overflow-y: auto; }
+.fill-line { padding: 2px 0; font-size: 12px; border-bottom: 1px solid var(--border); }
+.fill-buy { color: var(--green); }
+.fill-sell { color: var(--red); }
+
+/* Country filter */
+select { background: var(--bg3); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 3px 8px; font-family: inherit; font-size: 12px; }
+
+/* Connection status */
+.conn-status { position: fixed; top: 4px; right: 12px; font-size: 11px; padding: 2px 8px; border-radius: 4px; }
+.conn-ok { color: var(--green); }
+.conn-err { color: var(--red); }
+
+/* Params popup */
+.modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 100; }
+.modal-overlay.show { display: flex; justify-content: center; align-items: center; }
+.modal { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; min-width: 300px; max-width: 500px; }
+.modal h3 { color: var(--accent); margin-bottom: 10px; }
+.modal pre { color: var(--fg); font-size: 12px; white-space: pre-wrap; }
+.modal button { margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <!-- Top -->
+  <div class="top" id="section-top" style="min-height:80px;">
+    <div class="panel top-left">
+      <h3>Control</h3>
+      <div id="controls">(waiting for data...)</div>
+    </div>
+    <div class="resize-v" data-resize="top-h"></div>
+    <div class="panel top-right">
+      <h3>Summary</h3>
+      <div id="summary" class="table-wrap">
+        <table id="summary-table">
+          <thead><tr id="summary-header"></tr></thead>
+          <tbody id="summary-rows"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="resize-h" data-resize="top-mid"></div>
+
+  <!-- Middle -->
+  <div class="middle" id="section-mid" style="min-height:60px;">
+    <div class="panel mid-left">
+      <h3>Delta and Beta</h3>
+      <div id="delta-beta" class="delta-beta-text"></div>
+    </div>
+    <div class="resize-v" data-resize="mid-h"></div>
+    <div class="panel mid-right">
+      <h3>Log</h3>
+      <div id="console-log" class="log-area"></div>
+    </div>
+  </div>
+
+  <div class="resize-h" data-resize="mid-bot"></div>
+
+  <!-- Bottom — Tabs -->
+  <div class="bottom" id="section-bot">
+    <div class="tab-bar">
+      <button class="tab-btn active" onclick="switchTab('quoting')">Quoting</button>
+      <button class="tab-btn" onclick="switchTab('trades')">Trades</button>
+      <div class="tab-spacer"></div>
+      <label style="color:var(--fg2)">Country:</label>
+      <select id="country-filter" onchange="onFilterChange()">
+        <option value="All">All</option>
+      </select>
+      <label style="color:var(--fg2);margin-left:8px;">RIC:</label>
+      <input id="ric-filter" type="text" placeholder="regex" oninput="onFilterChange()" style="background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:3px 8px;font-family:inherit;font-size:12px;width:120px;">
+    </div>
+    <div class="tab-content">
+      <!-- Tab 1: Quoting -->
+      <div id="tab-quoting" class="tab-page active">
+        <div class="table-wrap">
+          <table id="quote-table">
+            <thead><tr id="quote-header"></tr></thead>
+            <tbody id="quote-body"></tbody>
+          </table>
+        </div>
+      </div>
+      <!-- Tab 2: Trades -->
+      <div id="tab-trades" class="tab-page">
+        <div class="trades-split">
+          <div class="trades-left">
+            <h3 style="color:var(--accent);font-size:13px;margin-bottom:6px;">Trade Fills</h3>
+            <div id="fills-list"></div>
+          </div>
+          <div class="resize-v" data-resize="trades-h"></div>
+          <div class="trades-right">
+            <h3 style="color:var(--accent);font-size:13px;margin-bottom:6px;">Trade Summary</h3>
+            <div class="table-wrap">
+              <table id="trades-table">
+                <thead><tr>
+                  <th class="resizable">RIC</th><th class="num resizable">Buy Not.</th><th class="num resizable">Sell Not.</th>
+                  <th class="num resizable">PnL</th><th class="num resizable">Ratio</th>
+                </tr></thead>
+                <tbody id="summary-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<span id="conn-status" class="conn-status conn-err">Disconnected</span>
+
+<!-- Params modal -->
+<div id="modal-overlay" class="modal-overlay" onclick="closeModal()">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h3 id="modal-title">Params</h3>
+    <pre id="modal-body"></pre>
+    <button onclick="closeModal()">Close</button>
+  </div>
+</div>
+
+<script>
+let ws = null;
+let latestData = null;
+let knownMarkets = new Set();
+let currentTab = 'quoting';
+let controlsBuilt = false;
+
+// ── Column order (draggable) ──
+const ALL_COLUMNS = [
+  {key: 'ric',        label: 'RIC',        cls: ''},
+  {key: 'status',     label: 'Status',     cls: ''},
+  {key: 'alpha',      label: 'Alpha',      cls: 'num'},
+  {key: 'buy_state',  label: 'Bid State',  cls: ''},
+  {key: 'sell_state', label: 'Ask State',  cls: ''},
+  {key: 'buy_raw',    label: 'Opt Bid',    cls: 'num'},
+  {key: 'sell_raw',   label: 'Opt Ask',    cls: 'num'},
+  {key: 'live_buy',   label: 'Live Bid',   cls: 'num'},
+  {key: 'live_sell',  label: 'Live Ask',   cls: 'num'},
+  {key: 'filled_buy', label: 'Filled B',   cls: 'num'},
+  {key: 'filled_sell',label: 'Filled S',   cls: 'num'},
+  {key: 'inventory',  label: 'Inventory',  cls: 'num'},
+  {key: 'last_price', label: 'Last Price', cls: 'num'},
+  {key: 'last_sent',  label: 'Updated',    cls: ''},
+  {key: 'remark',     label: 'Remark',     cls: ''},
+];
+
+// Load saved column order from localStorage
+let columnOrder;
+try {
+  const saved = localStorage.getItem('pimm_col_order');
+  if (saved) {
+    const parsed = JSON.parse(saved);
+    // Validate: must contain all keys
+    const allKeys = new Set(ALL_COLUMNS.map(c => c.key));
+    if (parsed.length === allKeys.size && parsed.every(k => allKeys.has(k))) {
+      columnOrder = parsed;
+    }
+  }
+} catch(e) {}
+if (!columnOrder) columnOrder = ALL_COLUMNS.map(c => c.key);
+
+function getCol(key) { return ALL_COLUMNS.find(c => c.key === key); }
+
+function buildHeader() {
+  const tr = document.getElementById('quote-header');
+  tr.innerHTML = '';
+  columnOrder.forEach(function(key, idx) {
+    const col = getCol(key);
+    const th = document.createElement('th');
+    th.textContent = col.label;
+    if (col.cls) th.className = col.cls;
+    th.classList.add('draggable', 'resizable');
+    th.draggable = true;
+    th.dataset.key = key;
+    th.dataset.idx = idx;
+    th.addEventListener('dragstart', onDragStart);
+    th.addEventListener('dragover', onDragOver);
+    th.addEventListener('dragleave', onDragLeave);
+    th.addEventListener('drop', onDrop);
+    th.addEventListener('dragend', onDragEnd);
+    // Resize handle
+    const handle = document.createElement('div');
+    handle.className = 'col-resize-handle';
+    handle.addEventListener('mousedown', function(e) { startColResize(e, th); });
+    th.appendChild(handle);
+    tr.appendChild(th);
+  });
+  initTradesSummaryResize();
+}
+
+let dragSrcIdx = null;
+function onDragStart(e) {
+  dragSrcIdx = parseInt(e.target.dataset.idx);
+  e.target.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+}
+function onDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  e.target.closest('th').classList.add('drag-over');
+}
+function onDragLeave(e) {
+  e.target.closest('th').classList.remove('drag-over');
+}
+function onDrop(e) {
+  e.preventDefault();
+  const th = e.target.closest('th');
+  th.classList.remove('drag-over');
+  const dropIdx = parseInt(th.dataset.idx);
+  if (dragSrcIdx !== null && dragSrcIdx !== dropIdx) {
+    const moved = columnOrder.splice(dragSrcIdx, 1)[0];
+    columnOrder.splice(dropIdx, 0, moved);
+    localStorage.setItem('pimm_col_order', JSON.stringify(columnOrder));
+    buildHeader();
+    if (latestData) renderQuotingTable(latestData);
+  }
+}
+function onDragEnd(e) {
+  e.target.classList.remove('dragging');
+  document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+}
+
+buildHeader();
+
+// ── Column resize ──
+function startColResize(e, th) {
+  e.preventDefault();
+  e.stopPropagation();
+  th.draggable = false;  // disable drag during resize
+  const startX = e.clientX;
+  const startW = th.offsetWidth;
+  function onMove(e2) {
+    const w = Math.max(40, startW + e2.clientX - startX);
+    th.style.width = w + 'px';
+    th.style.minWidth = w + 'px';
+  }
+  function onUp() {
+    th.draggable = true;
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function initTradesSummaryResize() {
+  document.querySelectorAll('#trades-table thead th.resizable').forEach(function(th) {
+    if (th.querySelector('.col-resize-handle')) return;
+    const handle = document.createElement('div');
+    handle.className = 'col-resize-handle';
+    handle.addEventListener('mousedown', function(e) { startColResize(e, th); });
+    th.appendChild(handle);
+  });
+}
+
+// ── Cell value renderer ──
+function cellHtml(r, key) {
+  switch(key) {
+    case 'ric':        return '<td>' + r.ric + '</td>';
+    case 'status':     return '<td class="' + (r.quote_status ? 'status-on' : 'status-off') + '">' + (r.quote_status ? 'ON' : 'OFF') + '</td>';
+    case 'buy_state':  return '<td>' + (r.buy_state || '--') + '</td>';
+    case 'buy_raw':    return '<td class="num">' + fmtInt(r.buy_raw) + '</td>';
+    case 'live_buy':   return '<td class="num">' + fmtInt(r.live_buy_qty) + '</td>';
+    case 'sell_state': return '<td>' + (r.sell_state || '--') + '</td>';
+    case 'sell_raw':   return '<td class="num">' + fmtInt(r.sell_raw) + '</td>';
+    case 'live_sell':  return '<td class="num">' + fmtInt(r.live_sell_qty) + '</td>';
+    case 'last_price': return '<td class="num">' + fmtNum(r.last_price, 2) + '</td>';
+    case 'inventory':  return '<td class="num">' + fmtInt(r.inventory) + '</td>';
+    case 'alpha':      var ac = r.alpha > 0.05 ? 'alpha-pos' : r.alpha < -0.05 ? 'alpha-neg' : '';
+                       return '<td class="num ' + ac + '">' + fmtNum(r.alpha, 4) + '</td>';
+    case 'filled_buy': return '<td class="num">' + fmtInt(r.filled_buy) + '</td>';
+    case 'filled_sell':return '<td class="num">' + fmtInt(r.filled_sell) + '</td>';
+    case 'last_sent':  return '<td>' + (r.last_sent || '--') + '</td>';
+    case 'remark':     return '<td>' + escHtml(r.remark) + '</td>';
+    default:           return '<td>--</td>';
+  }
+}
+
+// ── Resizable panels (flex-ratio based, adapts to browser resize) ──
+(function() {
+  let active = null, startPos = 0, startSizes = [];
+
+  function getPair(handle, kind) {
+    if (kind === 'top-mid') return [document.getElementById('section-top'), document.getElementById('section-mid')];
+    if (kind === 'mid-bot') return [document.getElementById('section-mid'), document.getElementById('section-bot')];
+    return [handle.previousElementSibling, handle.nextElementSibling];
+  }
+
+  document.querySelectorAll('.resize-h, .resize-v').forEach(function(handle) {
+    handle.addEventListener('mousedown', function(e) {
+      e.preventDefault();
+      active = handle;
+      handle.classList.add('active');
+      const kind = handle.dataset.resize;
+      const isV = handle.classList.contains('resize-v');
+      const pair = getPair(handle, kind);
+      startPos = isV ? e.clientX : e.clientY;
+      startSizes = isV ? [pair[0].offsetWidth, pair[1].offsetWidth]
+                       : [pair[0].offsetHeight, pair[1].offsetHeight];
+
+      function onMove(e2) {
+        if (!active) return;
+        const delta = isV ? (e2.clientX - startPos) : (e2.clientY - startPos);
+        const minSize = isV ? 100 : 40;
+        const newA = Math.max(minSize, startSizes[0] + delta);
+        const newB = Math.max(minSize, startSizes[1] - delta);
+        if (isV) {
+          // Horizontal splits: use flex ratios within the pair
+          const total = newA + newB;
+          pair[0].style.flex = (newA / total).toFixed(4);
+          pair[1].style.flex = (newB / total).toFixed(4);
+          pair[0].style.width = ''; pair[1].style.width = '';
+        } else {
+          // Vertical section splits: pin both panels to fixed px.
+          // The uninvolved third section keeps its current style
+          // and the container distributes remaining space.
+          pair[0].style.flex = '0 0 ' + newA + 'px';
+          pair[1].style.flex = '0 0 ' + newB + 'px';
+          pair[0].style.height = ''; pair[1].style.height = '';
+          // Ensure the third section fills remaining space
+          var all = [document.getElementById('section-top'),
+                     document.getElementById('section-mid'),
+                     document.getElementById('section-bot')];
+          for (var s of all) {
+            if (s !== pair[0] && s !== pair[1]) {
+              s.style.flex = '1';
+            }
+          }
+        }
+      }
+
+      function onUp() {
+        if (active) active.classList.remove('active');
+        active = null;
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      }
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  });
+})();
+
+// ── Sync mid-left width to top-left (Control panel) ──
+let midLeftSynced = false;
+function syncMidLeft() {
+  const tl = document.querySelector('.top-left');
+  const ml = document.querySelector('.mid-left');
+  const mr = document.querySelector('.mid-right');
+  if (!tl || !ml || !mr) return;
+  const w = tl.offsetWidth;
+  const total = ml.offsetWidth + mr.offsetWidth;
+  if (total > 0 && w > 0) {
+    ml.style.flex = (w / total).toFixed(4);
+    mr.style.flex = ((total - w) / total).toFixed(4);
+    midLeftSynced = true;
+  }
+}
+
+// ── WebSocket ──
+function getToken() {
+  const p = new URLSearchParams(window.location.search);
+  return p.get('token') || '';
+}
+
+function connect() {
+  const tok = getToken();
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/ws?token=' + tok);
+
+  ws.onopen = function() {
+    document.getElementById('conn-status').textContent = 'Connected';
+    document.getElementById('conn-status').className = 'conn-status conn-ok';
+  };
+
+  ws.onclose = function() {
+    document.getElementById('conn-status').textContent = 'Disconnected';
+    document.getElementById('conn-status').className = 'conn-status conn-err';
+    setTimeout(connect, 2000);
+  };
+
+  ws.onerror = function() { ws.close(); };
+
+  ws.onmessage = function(evt) {
+    try {
+      latestData = JSON.parse(evt.data);
+      render(latestData);
+    } catch(e) { console.error('render error:', e); }
+  };
+}
+
+function sendCmd(action, market) {
+  if (ws && ws.readyState === 1) {
+    ws.send(JSON.stringify({action: action, market: market}));
+  }
+}
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-page').forEach(p => p.classList.remove('active'));
+  if (tab === 'quoting') {
+    document.querySelectorAll('.tab-btn')[0].classList.add('active');
+    document.getElementById('tab-quoting').classList.add('active');
+  } else {
+    document.querySelectorAll('.tab-btn')[1].classList.add('active');
+    document.getElementById('tab-trades').classList.add('active');
+  }
+}
+
+function onFilterChange() {
+  if (latestData) render(latestData);
+}
+
+function getFilter() {
+  return document.getElementById('country-filter').value;
+}
+
+function getRicFilter() {
+  const v = document.getElementById('ric-filter').value.trim();
+  if (!v) return null;
+  try { return new RegExp(v, 'i'); } catch(e) { return null; }
+}
+
+function filterRows(rows) {
+  const re = getRicFilter();
+  if (!re) return rows;
+  return rows.filter(r => re.test(r.ric));
+}
+
+function ricSuffix(ric) { var i = ric.lastIndexOf('.'); return i >= 0 ? ric.substring(i+1) : ''; }
+function sortRows(rows) {
+  return rows.slice().sort(function(a, b) {
+    var sa = ricSuffix(a.ric), sb = ricSuffix(b.ric);
+    if (sa !== sb) return sa < sb ? -1 : 1;
+    return a.ric < b.ric ? -1 : a.ric > b.ric ? 1 : 0;
+  });
+}
+
+function fmtNum(v, dec) { return v != null ? v.toLocaleString(undefined, {minimumFractionDigits: dec, maximumFractionDigits: dec}) : '--'; }
+function fmtInt(v) { return v != null ? Math.round(v).toLocaleString() : '--'; }
+
+function pnlClass(v) { return v > 0 ? 'pnl-positive' : v < 0 ? 'pnl-negative' : ''; }
+
+function render(d) {
+  renderControls(d);
+  renderSummary(d);
+  renderDeltaBeta(d);
+  renderConsoleLog(d);
+  renderQuotingTable(d);
+  renderFills(d);
+  renderTradeSummary(d);
+  updateCountryFilter(d);
+}
+
+function updateCountryFilter(d) {
+  const sel = document.getElementById('country-filter');
+  const markets = Object.keys(d.markets).sort();
+  for (const m of markets) {
+    if (!knownMarkets.has(m)) {
+      knownMarkets.add(m);
+      const opt = document.createElement('option');
+      opt.value = m; opt.textContent = m;
+      sel.appendChild(opt);
+    }
+  }
+}
+
+function buildControls(d) {
+  const el = document.getElementById('controls');
+  el.innerHTML = '';
+  for (const m of Object.keys(d.markets).sort()) {
+    const row = document.createElement('div');
+    row.className = 'market-row';
+    row.id = 'ctrl-row-' + m;
+    row.innerHTML =
+      '<span class="market-name">' + m + '</span>' +
+      '<span class="market-session" id="ctrl-cd-' + m + '"></span>' +
+      '<span class="market-status" id="ctrl-st-' + m + '"></span>' +
+      '<button id="ctrl-start-' + m + '">Start</button>' +
+      '<button id="ctrl-stop-' + m + '">Stop</button>' +
+      '<button id="ctrl-view-' + m + '">View Params</button>' +
+      '<button id="ctrl-reload-' + m + '">Reload Params</button>';
+    el.appendChild(row);
+    document.getElementById('ctrl-start-' + m).addEventListener('click', function() { sendCmd('start', m); });
+    document.getElementById('ctrl-stop-' + m).addEventListener('click', function() { sendCmd('stop', m); });
+    document.getElementById('ctrl-view-' + m).addEventListener('click', function() { viewParams(m); });
+    document.getElementById('ctrl-reload-' + m).addEventListener('click', function() { sendCmd('reload', m); });
+  }
+  controlsBuilt = true;
+  if (!midLeftSynced) requestAnimationFrame(syncMidLeft);
+}
+
+function renderControls(d) {
+  if (!controlsBuilt) {
+    buildControls(d);
+  }
+  for (const m of Object.keys(d.markets).sort()) {
+    const stEl = document.getElementById('ctrl-st-' + m);
+    const cdEl = document.getElementById('ctrl-cd-' + m);
+    if (!stEl) { controlsBuilt = false; buildControls(d); return; }
+    const active = d.session_status[m];
+    stEl.textContent = active ? 'ACTIVE' : 'INACTIVE';
+    stEl.className = 'market-status ' + (active ? 'active' : 'inactive');
+    const cfg = d.market_configs ? d.market_configs[m] : null;
+    cdEl.textContent = cfg && cfg.sessions ? cfg.sessions : '--';
+  }
+}
+
+function renderSummary(d) {
+  const markets = Object.keys(d.markets).sort();
+  // Build header: blank + each market + Total
+  const hdr = document.getElementById('summary-header');
+  let hdrHtml = '<th></th>';
+  for (const m of markets) { hdrHtml += '<th class="num">' + m + '</th>'; }
+  hdrHtml += '<th class="num">Total</th>';
+  hdr.innerHTML = hdrHtml;
+
+  // Compute per-market stats
+  let totBuyNot = 0, totSellNot = 0, totUsd = 0;
+  const stats = {};
+  for (const m of markets) {
+    let buyNot = 0, sellNot = 0, mUsd = 0;
+    for (const r of d.markets[m]) {
+      buyNot += r.live_buy_qty * r.last_price * r.fx_rate;
+      sellNot += r.live_sell_qty * r.last_price * r.fx_rate;
+      mUsd += r.pnl_usd;
+    }
+    const s = d.scaling[m] || {buy: 0, sell: 0};
+    stats[m] = {buyNot: buyNot, sellNot: sellNot, pnlUsd: mUsd, scaling: s};
+    totBuyNot += buyNot;
+    totSellNot += sellNot;
+    totUsd += mUsd;
+  }
+
+  // Rows: Scaling, Notional, PnL (USD)
+  const body = document.getElementById('summary-rows');
+  let html = '';
+
+  // Scaling row
+  html += '<tr><td class="summary-label">Scaling</td>';
+  for (const m of markets) {
+    const s = stats[m].scaling;
+    html += '<td class="num">' + s.buy.toFixed(4) + ' / ' + s.sell.toFixed(4) + '</td>';
+  }
+  html += '<td class="num">--</td></tr>';
+
+  // Notional row
+  html += '<tr><td class="summary-label">Notional</td>';
+  for (const m of markets) {
+    html += '<td class="num">' + fmtInt(stats[m].buyNot) + ' / ' + fmtInt(stats[m].sellNot) + '</td>';
+  }
+  html += '<td class="num">' + fmtInt(totBuyNot) + ' / ' + fmtInt(totSellNot) + '</td></tr>';
+
+  // PnL (USD) row
+  html += '<tr><td class="summary-label">PnL (USD)</td>';
+  for (const m of markets) {
+    html += '<td class="num ' + pnlClass(stats[m].pnlUsd) + '">$' + fmtNum(stats[m].pnlUsd, 2) + '</td>';
+  }
+  html += '<td class="num ' + pnlClass(totUsd) + '">$' + fmtNum(totUsd, 2) + '</td></tr>';
+
+  body.innerHTML = html;
+}
+
+function renderDeltaBeta(d) {
+  const el = document.getElementById('delta-beta');
+  el.textContent = d.delta_beta_info || '';
+}
+
+function renderConsoleLog(d) {
+  const el = document.getElementById('console-log');
+  if (d.console_log && d.console_log.length > 0) {
+    el.innerHTML = d.console_log.map(l => '<div>' + escHtml(l) + '</div>').join('');
+    el.scrollTop = el.scrollHeight;
+  }
+}
+
+function renderQuotingTable(d) {
+  const filter = getFilter();
+  const body = document.getElementById('quote-body');
+  let allRows = [];
+  for (const m of Object.keys(d.markets).sort()) {
+    if (filter !== 'All' && m !== filter) continue;
+    allRows = allRows.concat(d.markets[m]);
+  }
+  allRows = filterRows(sortRows(allRows));
+  let html = '';
+  for (const r of allRows) {
+    html += '<tr>';
+    for (const key of columnOrder) {
+      html += cellHtml(r, key);
+    }
+    html += '</tr>';
+  }
+  body.innerHTML = html;
+}
+
+function renderFills(d) {
+  const filter = getFilter();
+  const ricRe = getRicFilter();
+  const el = document.getElementById('fills-list');
+  const ricMarket = {};
+  for (const m of Object.keys(d.markets)) {
+    for (const r of d.markets[m]) { ricMarket[r.ric] = m; }
+  }
+  let html = '';
+  const fills = d.fills || [];
+  for (let i = fills.length - 1; i >= 0; i--) {
+    const f = fills[i];
+    const fm = ricMarket[f.ric] || '??';
+    if (filter !== 'All' && fm !== filter) continue;
+    if (ricRe && !ricRe.test(f.ric)) continue;
+    const cls = f.side === 'buy' ? 'fill-buy' : 'fill-sell';
+    html += '<div class="fill-line ' + cls + '">[' + f.time + '] ' + fm + ' ' + f.side.toUpperCase() + ' ' + f.ric + ' qty=' + fmtInt(f.qty) + ' @ ' + fmtNum(f.price, 4) + '</div>';
+  }
+  el.innerHTML = html || '<div style="color:var(--fg2)">No fills yet</div>';
+}
+
+function renderTradeSummary(d) {
+  const filter = getFilter();
+  const body = document.getElementById('summary-body');
+  let allRows = [];
+  for (const m of Object.keys(d.markets).sort()) {
+    if (filter !== 'All' && m !== filter) continue;
+    for (const r of d.markets[m]) {
+      if (r.pnl_buy_qty === 0 && r.pnl_sell_qty === 0) continue;
+      allRows.push(r);
+    }
+  }
+  allRows = filterRows(sortRows(allRows));
+  let html = '';
+  for (const r of allRows) {
+    html += '<tr>' +
+      '<td>' + r.ric + '</td>' +
+      '<td class="num">' + fmtNum(r.buy_notional, 0) + '</td>' +
+      '<td class="num">' + fmtNum(r.sell_notional, 0) + '</td>' +
+      '<td class="num ' + pnlClass(r.pnl_local) + '">' + fmtNum(r.pnl_local, 2) + '</td>' +
+      '<td class="num">' + fmtNum(r.ratio, 1) + '%</td>' +
+      '</tr>';
+  }
+  body.innerHTML = html || '<tr><td colspan="5" style="color:var(--fg2)">No trades yet</td></tr>';
+}
+
+function viewParams(market) {
+  if (!latestData) return;
+  const cfg = latestData.market_configs ? latestData.market_configs[market] : null;
+  if (!cfg) return;
+  let text =
+    'Sessions: ' + cfg.sessions +
+    '\nOrder Valid Time: ' + cfg.order_valid_time + 's' +
+    '\nRefresh Buffer: ' + cfg.refresh_buffer + 's' +
+    '\nFull Batch Interval: ' + cfg.full_batch_interval + ' min' +
+    '\nMin Dispatch Interval: ' + cfg.min_dispatch_interval + 's' +
+    '\nSingle Name Cap: $' + fmtInt(cfg.single_name_cap) +
+    '\nMax Buy Notional: $' + fmtInt(cfg.max_buy_notional) +
+    '\nMax Sell Notional: $' + fmtInt(cfg.max_sell_notional) +
+    '\nMax Staleness: ' + cfg.max_staleness + 's' +
+    '\nPartial Change Threshold: ' + (cfg.partial_change_threshold * 100).toFixed(0) + '%' +
+    '\nRefill Fill Threshold: ' + (cfg.refill_fill_threshold * 100).toFixed(0) + '%' +
+    '\nAlpha Enabled: ' + (cfg.alpha_enabled ? 'Yes' : 'No');
+  const ov = cfg.stock_limit_overrides;
+  if (ov && Object.keys(ov).length > 0) {
+    text += '\n\nStock Limit Overrides:';
+    for (const [ric, lim] of Object.entries(ov)) {
+      text += '\n  ' + ric + ': $' + fmtInt(lim);
+    }
+  }
+  document.getElementById('modal-title').textContent = market + ' Config';
+  document.getElementById('modal-body').textContent = text;
+  document.getElementById('modal-overlay').classList.add('show');
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay').classList.remove('show');
+}
+
+function escHtml(s) {
+  if (!s) return '';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+connect();
+</script>
+</body>
+</html>

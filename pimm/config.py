@@ -7,11 +7,9 @@ from pathlib import Path
 
 class SessionWindow:
 
-    def __init__(self, start_hour, start_minute, end_hour, end_minute):
-        self.start_hour = start_hour
-        self.start_minute = start_minute
-        self.end_hour = end_hour
-        self.end_minute = end_minute
+    def __init__(self, sh, sm, eh, em):
+        self.start_hour, self.start_minute = sh, sm
+        self.end_hour, self.end_minute = eh, em
 
     @classmethod
     def parse(cls, raw):
@@ -23,26 +21,14 @@ class SessionWindow:
 
 class MarketConfig:
 
-    def __init__(
-        self,
-        name,
-        timezone,
-        sessions,
-        order_valid_time,
-        refresh_buffer,
-        full_batch_interval,
-        min_dispatch_interval,
-        single_name_cap,
-        max_buy_notional,
-        max_sell_notional,
-        max_staleness,
-        partial_change_threshold=0.10,
-        refill_fill_threshold=0.50,
-        universe_file=None,
-        stock_limit_overrides=None,
-    ):
+    def __init__(self, name, sessions, order_valid_time,
+                 refresh_buffer, full_batch_interval,
+                 min_dispatch_interval, single_name_cap,
+                 max_buy_notional, max_sell_notional,
+                 max_staleness, partial_change_threshold=0.10,
+                 refill_fill_threshold=0.50, universe_file=None,
+                 stock_limit_overrides=None, alpha_enabled=False):
         self.name = name
-        self.timezone = timezone
         self.sessions = sessions
         self.order_valid_time = order_valid_time
         self.refresh_buffer = refresh_buffer
@@ -56,61 +42,65 @@ class MarketConfig:
         self.refill_fill_threshold = refill_fill_threshold
         self.universe_file = universe_file
         self.stock_limit_overrides = stock_limit_overrides or {}
+        self.alpha_enabled = alpha_enabled
 
     def get_stock_limit(self, ric):
-        return self.stock_limit_overrides.get(ric, self.single_name_cap)
+        return self.stock_limit_overrides.get(
+            ric, self.single_name_cap
+        )
 
 
 def load_config(path, market_name):
     path = Path(path)
     parser = configparser.ConfigParser()
-    parser.optionxform = str  # preserve key case
+    parser.optionxform = str
     parser.read(str(path))
+    sec = parser[market_name]
 
-    section = parser[market_name]
-
-    raw_sessions = section.get("sessions", "")
     sessions = [
         SessionWindow.parse(s.strip())
-        for s in raw_sessions.split(",") if s.strip()
+        for s in sec.get("sessions", "").split(",") if s.strip()
     ]
 
     overrides = {}
-    override_section = "%s.overrides" % market_name
-    if parser.has_section(override_section):
-        for ric, val in parser.items(override_section):
+    ov_sec = f"{market_name}.overrides"
+    if parser.has_section(ov_sec):
+        for ric, val in parser.items(ov_sec):
             overrides[ric] = float(val)
 
+    g = sec.get
+    gb = sec.getboolean
     return MarketConfig(
-        name=market_name,
-        timezone=section.get("timezone", "Asia/Hong_Kong"),
-        sessions=sessions,
-        order_valid_time=int(section.get("order_valid_time", "5")),
-        refresh_buffer=int(section.get("refresh_buffer", "15")),
-        full_batch_interval=int(section.get("full_batch_interval", "10")),
-        min_dispatch_interval=int(section.get("min_dispatch_interval", "5")),
-        single_name_cap=float(section.get("single_name_cap", "50000")),
-        max_buy_notional=float(section.get("max_buy_notional", "10000000")),
-        max_sell_notional=float(section.get("max_sell_notional", "10000000")),
-        max_staleness=int(section.get("max_staleness", "30")),
-        partial_change_threshold=float(section.get("partial_change_threshold", "0.10")),
-        refill_fill_threshold=float(section.get("refill_fill_threshold", "0.50")),
-        universe_file=section.get("universe_file"),
+        name=market_name, sessions=sessions,
+        order_valid_time=int(g("order_valid_time", "5")),
+        refresh_buffer=int(g("refresh_buffer", "15")),
+        full_batch_interval=int(g("full_batch_interval", "10")),
+        min_dispatch_interval=int(g("min_dispatch_interval", "5")),
+        single_name_cap=float(g("single_name_cap", "50000")),
+        max_buy_notional=float(g("max_buy_notional", "10000000")),
+        max_sell_notional=float(g("max_sell_notional", "10000000")),
+        max_staleness=int(g("max_staleness", "30")),
+        partial_change_threshold=float(
+            g("partial_change_threshold", "0.10")),
+        refill_fill_threshold=float(
+            g("refill_fill_threshold", "0.50")),
+        universe_file=g("universe_file"),
         stock_limit_overrides=overrides,
+        alpha_enabled=gb("alpha_enabled", fallback=False),
     )
 
 
 def load_all_markets(path):
     path = Path(path)
     parser = configparser.ConfigParser()
-    parser.optionxform = str  # preserve key case
+    parser.optionxform = str
     parser.read(str(path))
-
     configs = {}
-    for section_name in parser.sections():
-        if "." in section_name:
+    skip = {"web", "DEFAULT"}
+    for name in parser.sections():
+        if "." in name or name in skip:
             continue
-        configs[section_name] = load_config(path, section_name)
+        configs[name] = load_config(path, name)
     return configs
 
 
@@ -118,11 +108,38 @@ def reload_market_config(path, market_name):
     return load_config(path, market_name)
 
 
+class WebConfig:
+
+    def __init__(self, port=8080, recipients=None,
+                 delta_beta_interval=5):
+        self.port = port
+        self.recipients = recipients or []
+        self.delta_beta_interval = delta_beta_interval
+
+
+def load_web_config(path):
+    path = Path(path)
+    parser = configparser.ConfigParser()
+    parser.optionxform = str
+    parser.read(str(path))
+    if not parser.has_section("web"):
+        return WebConfig()
+    sec = parser["web"]
+    recipients = [
+        r.strip()
+        for r in sec.get("recipients", "").split(",") if r.strip()
+    ]
+    return WebConfig(
+        port=int(sec.get("port", "8080")),
+        recipients=recipients,
+        delta_beta_interval=int(sec.get("delta_beta_interval", "5")),
+    )
+
+
 def load_universe(csv_path):
     ric_list = []
     with open(csv_path, newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
+        for row in csv.DictReader(f):
             ric = row["ric"].strip()
             if ric:
                 ric_list.append(ric)

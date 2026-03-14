@@ -6,7 +6,7 @@ logger = logging.getLogger(__name__)
 
 
 class StateManager:
-    # Manages the universe DataFrame — single source of truth for all per-stock state
+    # Manages the universe DataFrame — single source of truth
 
     COLUMNS = [
         "quote_status", "remark",
@@ -17,20 +17,18 @@ class StateManager:
         "alpha", "inventory",
         "live_buy_qty", "live_sell_qty",
         "last_sent_time",
-        "filled_buy_since_dispatch", "filled_sell_since_dispatch",
-        "pnl_buy_qty", "pnl_buy_cost", "pnl_sell_qty", "pnl_sell_revenue",
+        "filled_buy_since_dispatch",
+        "filled_sell_since_dispatch",
+        "pnl_buy_qty", "pnl_buy_cost",
+        "pnl_sell_qty", "pnl_sell_revenue",
     ]
 
     def __init__(self, ric_list, lot_sizes, config):
-        # Build universe DataFrame from RIC list
-        # All RICs from CSV are included — none filtered out
-        self.df = pd.DataFrame(index=pd.Index(ric_list, name="ric"))
-
-        # Quote status and remark
+        self.df = pd.DataFrame(
+            index=pd.Index(ric_list, name="ric")
+        )
         self.df["quote_status"] = True
         self.df["remark"] = ""
-
-        # Static columns from startup
         for ric in ric_list:
             if ric in lot_sizes:
                 self.df.at[ric, "lot_size"] = lot_sizes[ric]
@@ -38,13 +36,13 @@ class StateManager:
                 self.df.at[ric, "lot_size"] = float("nan")
                 self.df.at[ric, "quote_status"] = False
                 self.df.at[ric, "remark"] = "no lot size"
-                logger.warning("RIC %s has no lot size, quote_status=False", ric)
-
+                logger.warning(
+                    f"RIC {ric} has no lot size, "
+                    f"quote_status=False"
+                )
         self.df["stock_limit"] = [
             float(config.get_stock_limit(r)) for r in ric_list
         ]
-
-        # Dynamic columns initialized to defaults
         self.df["buy_state"] = ""
         self.df["sell_state"] = ""
         self.df["buy_raw"] = 0.0
@@ -65,7 +63,6 @@ class StateManager:
 
     @property
     def quotable(self):
-        # Return DataFrame slice of only quotable stocks
         return self.df[self.df["quote_status"] == True]  # noqa: E712
 
     def update_risk_appetite(self, feed_df):
