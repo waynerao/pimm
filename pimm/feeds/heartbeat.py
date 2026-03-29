@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 class HeartbeatMonitor:
     # Monitors feed staleness and triggers winsound.Beep alerts
 
-    def __init__(self, max_staleness):
-        self._max_staleness = max_staleness
+    def __init__(self, max_staleness_s):
+        self._max_staleness = max_staleness_s
         self._last_update = {}
         self._thread = None
         self._running = False
@@ -30,10 +30,7 @@ class HeartbeatMonitor:
 
     def start(self):
         self._running = True
-        self._thread = threading.Thread(
-            target=self._monitor_loop,
-            name="heartbeat-monitor", daemon=True,
-        )
+        self._thread = threading.Thread(target=self._monitor_loop, name="heartbeat-monitor", daemon=True)
         self._thread.start()
         ms = self._max_staleness
         logger.info(f"Heartbeat monitor started (max_staleness={ms}s)")
@@ -50,20 +47,16 @@ class HeartbeatMonitor:
                 ms = self._max_staleness
                 if elapsed > ms and feed_name not in self._stale_feeds:
                     self._stale_feeds.add(feed_name)
-                    logger.warning(
-                        f"Feed '{feed_name}' is STALE "
-                        f"({elapsed:.0f}s > {ms}s)"
-                    )
+                    logger.warning(f"Feed '{feed_name}' is STALE ({elapsed:.0f}s > {ms}s)")
                     self._beep()
 
     def _beep(self):
         if platform.system() == "Windows":
             try:
                 import winsound
+
                 winsound.Beep(1000, 500)
             except Exception:
                 logger.warning("winsound.Beep failed")
         else:
-            logger.warning(
-                "ALERT: Feed staleness detected (no winsound)"
-            )
+            logger.warning("ALERT: Feed staleness detected (no winsound)")

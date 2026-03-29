@@ -2,7 +2,7 @@
 name = "pimm"
 version = "0.4.0"
 description = "Python Intelligent Market Maker — dark pool market-making engine"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "pandas>=2.0",
     "fastapi>=0.110",
@@ -20,15 +20,19 @@ build-backend = "hatchling.build"
 packages = ["pimm", "configs"]
 
 [tool.ruff]
-line-length = 88
-target-version = "py311"
+line-length = 120
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "SIM"]
-ignore = ["UP031", "UP032"]  # allow % formatting per project convention
+ignore = ["UP031", "UP032", "I001"]  # allow % formatting, compact imports
+
+[tool.ruff.format]
+skip-magic-trailing-comma = true
 
 [tool.ruff.lint.isort]
 known-first-party = ["pimm", "configs"]
+split-on-trailing-comma = false
 
 [tool.pytest.ini_options]
 testpaths = ["test"]

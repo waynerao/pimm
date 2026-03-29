@@ -1,8 +1,15 @@
-# Tests for session window and refresh timing
+# Tests for session window, refresh timing, and day_type helpers
 
 from datetime import datetime
 
-from pimm.utils.time import HKT, is_in_session, needs_refresh, seconds_until_session_end
+from pimm.utils.time import (
+    HKT,
+    current_session_window,
+    is_in_session,
+    needs_refresh,
+    next_session_window,
+    seconds_until_session_end,
+)
 from test.conftest import make_config
 
 
@@ -36,6 +43,65 @@ class TestSessionWindows:
         config = make_config(["09:30-12:00"])
         dt = datetime(2024, 1, 15, 12, 0, 0, tzinfo=HKT)
         assert is_in_session(config, dt) is False
+
+
+class TestSessionWindowIndex:
+    def test_return_index_first_window(self):
+        config = make_config(["09:30-12:00", "13:00-16:00"])
+        dt = datetime(2024, 1, 15, 10, 0, 0, tzinfo=HKT)
+        in_session, idx = is_in_session(config, dt, return_index=True)
+        assert in_session is True
+        assert idx == 0
+
+    def test_return_index_second_window(self):
+        config = make_config(["09:30-12:00", "13:00-16:00"])
+        dt = datetime(2024, 1, 15, 14, 0, 0, tzinfo=HKT)
+        in_session, idx = is_in_session(config, dt, return_index=True)
+        assert in_session is True
+        assert idx == 1
+
+    def test_return_index_not_in_session(self):
+        config = make_config(["09:30-12:00", "13:00-16:00"])
+        dt = datetime(2024, 1, 15, 12, 30, 0, tzinfo=HKT)
+        in_session, idx = is_in_session(config, dt, return_index=True)
+        assert in_session is False
+        assert idx is None
+
+
+class TestCurrentSessionWindow:
+    def test_in_first_window(self):
+        config = make_config(["09:30-12:00", "13:00-16:00"])
+        dt = datetime(2024, 1, 15, 10, 0, 0, tzinfo=HKT)
+        win = current_session_window(config, dt)
+        assert win is not None
+        assert win.start_hour == 9
+        assert win.end_hour == 12
+
+    def test_not_in_session(self):
+        config = make_config(["09:30-12:00"])
+        dt = datetime(2024, 1, 15, 13, 0, 0, tzinfo=HKT)
+        assert current_session_window(config, dt) is None
+
+
+class TestNextSessionWindow:
+    def test_before_first_window(self):
+        config = make_config(["09:30-12:00", "13:00-16:00"])
+        dt = datetime(2024, 1, 15, 8, 0, 0, tzinfo=HKT)
+        win = next_session_window(config, dt)
+        assert win is not None
+        assert win.start_hour == 9
+
+    def test_between_windows(self):
+        config = make_config(["09:30-12:00", "13:00-16:00"])
+        dt = datetime(2024, 1, 15, 12, 30, 0, tzinfo=HKT)
+        win = next_session_window(config, dt)
+        assert win is not None
+        assert win.start_hour == 13
+
+    def test_after_all_windows(self):
+        config = make_config(["09:30-12:00", "13:00-16:00"])
+        dt = datetime(2024, 1, 15, 17, 0, 0, tzinfo=HKT)
+        assert next_session_window(config, dt) is None
 
 
 class TestCountdown:

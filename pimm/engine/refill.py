@@ -28,14 +28,8 @@ def accumulate_fills(universe_df, fills_df):
 
 def get_refill_mask(universe_df, threshold):
     # Return boolean mask: stocks where filled >= threshold * live_qty
-    buy_refill = (
-        universe_df["filled_buy_since_dispatch"]
-        >= threshold * universe_df["live_buy_qty"]
-    )
-    sell_refill = (
-        universe_df["filled_sell_since_dispatch"]
-        >= threshold * universe_df["live_sell_qty"]
-    )
+    buy_refill = universe_df["filled_buy_since_dispatch"] >= threshold * universe_df["live_buy_qty"]
+    sell_refill = universe_df["filled_sell_since_dispatch"] >= threshold * universe_df["live_sell_qty"]
     # A stock needs refill if either side triggers
     return buy_refill | sell_refill
 

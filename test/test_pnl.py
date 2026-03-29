@@ -23,10 +23,7 @@ class TestPnlAccumulation:
         state_mgr.df.at["0005.HK", "pnl_buy_cost"] = 400.0 * 59.0
 
         r = state_mgr.df.loc["0005.HK"]
-        pnl = (
-            r["last_price"] * (r["pnl_buy_qty"] - r["pnl_sell_qty"])
-            - r["pnl_buy_cost"] + r["pnl_sell_revenue"]
-        )
+        pnl = r["last_price"] * (r["pnl_buy_qty"] - r["pnl_sell_qty"]) - r["pnl_buy_cost"] + r["pnl_sell_revenue"]
         # 60 * 400 - 23600 = 24000 - 23600 = 400
         assert pnl == 400.0
 
@@ -37,10 +34,7 @@ class TestPnlAccumulation:
         state_mgr.df.at["0005.HK", "pnl_sell_revenue"] = 200.0 * 61.0
 
         r = state_mgr.df.loc["0005.HK"]
-        pnl = (
-            r["last_price"] * (r["pnl_buy_qty"] - r["pnl_sell_qty"])
-            - r["pnl_buy_cost"] + r["pnl_sell_revenue"]
-        )
+        pnl = r["last_price"] * (r["pnl_buy_qty"] - r["pnl_sell_qty"]) - r["pnl_buy_cost"] + r["pnl_sell_revenue"]
         # 60 * (0 - 200) - 0 + 12200 = -12000 + 12200 = 200
         assert pnl == 200.0
 
@@ -53,10 +47,7 @@ class TestPnlAccumulation:
         state_mgr.df.at["0005.HK", "pnl_sell_revenue"] = 200.0 * 61.0
 
         r = state_mgr.df.loc["0005.HK"]
-        pnl = (
-            r["last_price"] * (r["pnl_buy_qty"] - r["pnl_sell_qty"])
-            - r["pnl_buy_cost"] + r["pnl_sell_revenue"]
-        )
+        pnl = r["last_price"] * (r["pnl_buy_qty"] - r["pnl_sell_qty"]) - r["pnl_buy_cost"] + r["pnl_sell_revenue"]
         # 60 * 200 - 23600 + 12200 = 12000 - 23600 + 12200 = 600
         assert pnl == 600.0
 
@@ -69,19 +60,13 @@ class TestPnlPriceChange:
 
         # At last_price=60: pnl = 400
         r = state_mgr.df.loc["0005.HK"]
-        pnl1 = (
-            r["last_price"] * (r["pnl_buy_qty"] - r["pnl_sell_qty"])
-            - r["pnl_buy_cost"] + r["pnl_sell_revenue"]
-        )
+        pnl1 = r["last_price"] * (r["pnl_buy_qty"] - r["pnl_sell_qty"]) - r["pnl_buy_cost"] + r["pnl_sell_revenue"]
         assert pnl1 == 400.0
 
         # Price goes to 62: pnl = 62*400 - 23600 = 1200
         state_mgr.df.at["0005.HK", "last_price"] = 62.0
         r = state_mgr.df.loc["0005.HK"]
-        pnl2 = (
-            r["last_price"] * (r["pnl_buy_qty"] - r["pnl_sell_qty"])
-            - r["pnl_buy_cost"] + r["pnl_sell_revenue"]
-        )
+        pnl2 = r["last_price"] * (r["pnl_buy_qty"] - r["pnl_sell_qty"]) - r["pnl_buy_cost"] + r["pnl_sell_revenue"]
         assert pnl2 == 1200.0
 
 
@@ -124,10 +109,8 @@ class TestPnlAggregate:
         state_mgr.df.at["0700.HK", "pnl_sell_revenue"] = 100.0 * 385.0
 
         df = state_mgr.df
-        pnl_local = (
-            df["last_price"] * (df["pnl_buy_qty"] - df["pnl_sell_qty"])
-            - df["pnl_buy_cost"] + df["pnl_sell_revenue"]
-        )
+        pnl_local = (df["last_price"] * (df["pnl_buy_qty"] - df["pnl_sell_qty"])
+                     - df["pnl_buy_cost"] + df["pnl_sell_revenue"])
         assert pnl_local.sum() == 900.0
 
     def test_aggregate_usd_pnl(self, state_mgr, risk_df, price_df):
@@ -138,10 +121,8 @@ class TestPnlAggregate:
         state_mgr.df.at["0005.HK", "pnl_buy_cost"] = 400.0 * 59.0
 
         df = state_mgr.df
-        pnl_local = (
-            df["last_price"] * (df["pnl_buy_qty"] - df["pnl_sell_qty"])
-            - df["pnl_buy_cost"] + df["pnl_sell_revenue"]
-        )
+        pnl_local = (df["last_price"] * (df["pnl_buy_qty"] - df["pnl_sell_qty"])
+                     - df["pnl_buy_cost"] + df["pnl_sell_revenue"])
         pnl_usd = pnl_local * df["fx_rate"]
         # pnl_local for 0005.HK = 400, fx_rate = 0.128 -> usd = 51.2
         assert abs(pnl_usd.sum() - 51.2) < 0.01

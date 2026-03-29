@@ -4,16 +4,8 @@ import logging
 
 import pandas as pd
 
-from pimm.engine.refill import (
-    cap_refill_qty,
-    get_refill_mask,
-    reset_fill_counters,
-)
-from pimm.engine.sizing import (
-    apply_inventory_constraint,
-    compute_optimal_cached,
-    compute_optimal_quotes,
-)
+from pimm.engine.refill import cap_refill_qty, get_refill_mask, reset_fill_counters
+from pimm.engine.sizing import apply_inventory_constraint, compute_optimal_cached, compute_optimal_quotes
 from pimm.utils.time import now_hkt
 
 logger = logging.getLogger(__name__)
@@ -26,9 +18,7 @@ def build_full_batch(state_mgr, config):
     df = state_mgr.df
 
     # Run 4-step pipeline with fresh scaling
-    optimal, buy_scaling, sell_scaling = compute_optimal_quotes(
-        df, config.max_buy_notional, config.max_sell_notional
-    )
+    optimal, buy_scaling, sell_scaling = compute_optimal_quotes(df, config.max_buy_notional, config.max_sell_notional)
 
     # Apply inventory constraint
     dispatch = apply_inventory_constraint(optimal, df)
@@ -81,9 +71,7 @@ def build_partial_update(state_mgr, config, buy_scaling, sell_scaling):
     # Cap refill stocks
     refill_rics = refill_mask & update_mask
     if refill_rics.any():
-        partial.loc[refill_rics] = cap_refill_qty(
-            partial.loc[refill_rics], df.loc[refill_rics.index[refill_rics]]
-        )
+        partial.loc[refill_rics] = cap_refill_qty(partial.loc[refill_rics], df.loc[refill_rics.index[refill_rics]])
 
     # Attach price types
     partial["buy_state"] = df.loc[partial.index, "buy_state"]
@@ -108,21 +96,13 @@ def compute_notional_impact(universe_df, partial_df):
 
     # Current live notional for stocks NOT in partial
     unch = universe_df.loc[~universe_df.index.isin(partial_rics)]
-    buy_live = (
-        unch["live_buy_qty"] * unch["last_price"] * unch["fx_rate"]
-    ).sum()
-    sell_live = (
-        unch["live_sell_qty"] * unch["last_price"] * unch["fx_rate"]
-    ).sum()
+    buy_live = (unch["live_buy_qty"] * unch["last_price"] * unch["fx_rate"]).sum()
+    sell_live = (unch["live_sell_qty"] * unch["last_price"] * unch["fx_rate"]).sum()
 
     # Add partial update notional
     pp = universe_df.loc[partial_df.index]
-    buy_partial = (
-        partial_df["buy_dispatch"] * pp["last_price"] * pp["fx_rate"]
-    ).sum()
-    sell_partial = (
-        partial_df["sell_dispatch"] * pp["last_price"] * pp["fx_rate"]
-    ).sum()
+    buy_partial = (partial_df["buy_dispatch"] * pp["last_price"] * pp["fx_rate"]).sum()
+    sell_partial = (partial_df["sell_dispatch"] * pp["last_price"] * pp["fx_rate"]).sum()
 
     return buy_live + buy_partial, sell_live + sell_partial
 

@@ -1,0 +1,34 @@
+[pimm]
+web_port = 8080
+max_staleness_s = 30
+full_batch_interval_m = 10
+min_dispatch_interval_s = 5
+delta_beta_interval_s = 5
+recipients = []
+
+[market_defaults]
+order_valid_time_m = 5
+refresh_buffer_s = 15
+single_name_cap = 50000
+max_buy_notional = 10000000
+max_sell_notional = 10000000
+partial_change_threshold = 0.10
+refill_fill_threshold = 0.50
+alpha_enabled = false
+
+[market.HK]
+universe_file = "configs/hk_universe.csv"
+sessions = ["09:30-12:00", "13:00-16:00"]
+alpha_enabled = true
+
+[market.HK.overrides]
+"0005.HK" = 100000
+"0700.HK" = 20000
+
+[market.CN]
+universe_file = "configs/cn_universe.csv"
+sessions = ["09:30-11:30", "13:00-15:00"]
+
+[market.TW]
+universe_file = "configs/tw_universe.csv"
+sessions = ["09:00-13:30"]

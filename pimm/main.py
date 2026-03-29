@@ -3,15 +3,13 @@
 import argparse
 import asyncio
 import logging
+import os
 import signal
+from datetime import datetime
 
 import uvicorn
 
-from pimm.config import (
-    load_all_markets,
-    load_universe,
-    load_web_config,
-)
+from pimm.config import load_all_markets, load_pimm_config, load_universe
 from pimm.engine.loop import MarketState, TradingEngine
 from pimm.engine.state import StateManager
 from pimm.feeds.alpha import AlphaFeed
@@ -20,107 +18,81 @@ from pimm.feeds.heartbeat import HeartbeatMonitor
 from pimm.feeds.inventory import InventoryFeed
 from pimm.feeds.live_price import LivePriceFeed
 from pimm.feeds.risk_appetite import RiskAppetiteFeed
-from pimm.web.server import (
-    broadcast_snapshot,
-    create_app,
-    generate_token,
-)
+from pimm.utils.network import get_host_ip
+from pimm.web.server import broadcast_snapshot, create_app, generate_token
 
 logger = logging.getLogger("pimm")
 
 
 def _setup_logging():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    fmt = "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
+    logging.basicConfig(level=logging.INFO, format=fmt, datefmt="%H:%M:%S")
+    os.makedirs("logs", exist_ok=True)
+    fh = logging.FileHandler(f"logs/pimm_{datetime.now():%Y%m%d}.log", encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter(fmt, datefmt="%H:%M:%S"))
+    logging.getLogger().addHandler(fh)
 
 
-def _get_stub_lot_sizes(ric_list):
-    stub = {
-        "0005.HK": 400, "0700.HK": 100, "9988.HK": 100,
-        "1299.HK": 500, "0388.HK": 100,
-    }
-    return {r: stub[r] for r in ric_list if r in stub}
+def _get_trading_day_type(market):
+    """Stub: always returns 1 until desktool is wired."""
+    return 1
 
 
-class CriticalLogHandler(logging.Handler):
-    """Captures CRITICAL+ log messages for web dashboard."""
+class WebLogHandler(logging.Handler):
+    """Captures log messages for web dashboard."""
 
     def __init__(self, engine):
-        super().__init__(level=logging.CRITICAL)
+        super().__init__(level=logging.INFO)
         self._engine = engine
 
     def emit(self, record):
         msg = self.format(record)
-        self._engine.add_console_log(msg)
+        self._engine.add_console_log(record.levelname, msg)
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="pimm — Market Maker Engine"
-    )
-    parser.add_argument(
-        "config", help="Path to config.cfg file"
-    )
+    parser = argparse.ArgumentParser(description="pimm — Market Maker Engine")
+    parser.add_argument("config", help="Path to config.toml file")
     args = parser.parse_args()
 
     _setup_logging()
 
+    pimm_config = load_pimm_config(args.config)
     all_configs = load_all_markets(args.config)
-    web_config = load_web_config(args.config)
-    logger.info(
-        f"Loaded {len(all_configs)} markets: "
-        f"{list(all_configs.keys())}"
-    )
+    logger.info(f"Loaded {len(all_configs)} markets: {list(all_configs.keys())}")
 
     # Build per-market state
     market_states = {}
-    for mname, config in all_configs.items():
+    for mkt, config in all_configs.items():
         ric_list = load_universe(config.universe_file)
-        lot_sizes = _get_stub_lot_sizes(ric_list)
-        state_mgr = StateManager(ric_list, lot_sizes, config)
-        market_states[mname] = MarketState(
-            mname, config, state_mgr
-        )
-        logger.info(
-            f"[{mname}] Universe: {len(ric_list)} RICs, "
-            f"{len(lot_sizes)} with lot sizes"
-        )
+        state_mgr = StateManager(ric_list, config)
+        day_type = _get_trading_day_type(mkt)
+        market_states[mkt] = MarketState(mkt, config, state_mgr, day_type=day_type)
+        logger.info(f"[{mkt}] day_type={day_type}")
 
-    max_staleness = max(
-        c.max_staleness for c in all_configs.values()
-    )
-    heartbeat = HeartbeatMonitor(max_staleness=max_staleness)
+    heartbeat = HeartbeatMonitor(max_staleness_s=pimm_config.max_staleness_s)
 
     def dispatch(df):
-        logger.info(
-            f"DISPATCH to KDB+:\n{df.to_string(index=False)}"
-        )
+        logger.info(f"DISPATCH to KDB+:\n{df.to_string(index=False)}")
 
     loop = asyncio.new_event_loop()
 
     def push_event(event_type, data):
-        loop.call_soon_threadsafe(
-            lambda: engine.event_queue.put_nowait(
-                (event_type, data)
-            )
-        )
+        loop.call_soon_threadsafe(lambda: engine.event_queue.put_nowait((event_type, data)))
 
     risk_feed = RiskAppetiteFeed(engine_push=push_event)
     price_feed = LivePriceFeed(engine_push=push_event)
     fills_feed = FillsFeed(engine_push=push_event)
-    inv_feed = InventoryFeed(engine_push=push_event)
-    alpha_feed = AlphaFeed(engine_push=push_event)
 
-    for mname, ms in market_states.items():
-        inv_feed.register_market(mname)
+    # Per-market feeds stored as dicts
+    inventory_feeds = {}
+    alpha_feeds = {}
+    for mkt, ms in market_states.items():
+        rics = list(ms.state_mgr.df.index)
+        inventory_feeds[mkt] = InventoryFeed(engine_push=push_event, ric_list=rics, market_name=mkt)
         if ms.config.alpha_enabled:
-            quotable_rics = list(ms.state_mgr.quotable.index)
-            alpha_feed.register_market(
-                mname, rics=quotable_rics
-            )
+            alpha_feeds[mkt] = AlphaFeed(engine_push=push_event, ric_list=rics, market_name=mkt)
 
     # Web server
     token = generate_token()
@@ -131,60 +103,42 @@ def main():
         await broadcast_snapshot(app, snap)
 
     engine = TradingEngine(
-        market_states=market_states,
-        dispatch_callback=dispatch,
-        snapshot_callback=snapshot_cb,
-        inventory_feed=inv_feed,
-        alpha_feed=alpha_feed, config_path=args.config,
-    )
+        market_states=market_states, config_path=args.config, dispatch_callback=dispatch,
+        snapshot_callback=snapshot_cb, inventory_feeds=inventory_feeds, alpha_feeds=alpha_feeds)
 
-    engine_ref["cmd_callback"] = lambda action, market: (
-        engine.process_web_command(action, market)
-    )
+    engine_ref["cmd_callback"] = lambda action, market: engine.process_web_command(action, market)
 
-    crit_handler = CriticalLogHandler(engine)
-    crit_handler.setFormatter(logging.Formatter(
-        "%(asctime)s %(levelname)s: %(message)s", "%H:%M:%S"
-    ))
-    logging.getLogger().addHandler(crit_handler)
+    web_handler = WebLogHandler(engine)
+    web_handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s", "%H:%M:%S"))
+    logging.getLogger().addHandler(web_handler)
 
-    # Start feeds
+    # Start shared feeds
     heartbeat.start()
     risk_feed.start(loop)
     price_feed.start(loop)
     fills_feed.start(loop)
-    inv_feed.set_loop(loop)
-    alpha_feed.set_loop(loop)
 
-    url = f"http://localhost:{web_config.port}/?token={token}"
+    url = f"http://{get_host_ip()}:{pimm_config.web_port}/?token={token}"
     logger.info(f"Web dashboard: {url}")
     print(f"\n  Dashboard URL: {url}\n")
 
     def handle_shutdown(sig, frame):
         logger.info(f"Received signal {sig}, shutting down...")
-        loop.call_soon_threadsafe(
-            lambda: asyncio.ensure_future(engine.shutdown())
-        )
+        loop.call_soon_threadsafe(lambda: asyncio.ensure_future(engine.shutdown()))
 
     signal.signal(signal.SIGINT, handle_shutdown)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, handle_shutdown)
 
     async def run_all():
-        uvi_config = uvicorn.Config(
-            app, host="0.0.0.0", port=web_config.port,
-            log_level="warning", loop="none",
-        )
+        uvi_config = uvicorn.Config(app, host="0.0.0.0", port=pimm_config.web_port, log_level="warning", loop="none")
         server = uvicorn.Server(uvi_config)
         server.install_signal_handlers = lambda: None
 
         engine_task = asyncio.create_task(engine.run())
         server_task = asyncio.create_task(server.serve())
 
-        done, pending = await asyncio.wait(
-            [engine_task, server_task],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
+        done, pending = await asyncio.wait([engine_task, server_task], return_when=asyncio.FIRST_COMPLETED)
         for t in pending:
             t.cancel()
 
@@ -198,9 +152,10 @@ def main():
         risk_feed.stop()
         price_feed.stop()
         fills_feed.stop()
-        for mname in market_states:
-            inv_feed.stop_market(mname)
-            alpha_feed.stop_market(mname)
+        for inv in inventory_feeds.values():
+            inv.stop()
+        for alpha in alpha_feeds.values():
+            alpha.stop()
         loop.close()
         logger.info("Shutdown complete")
 

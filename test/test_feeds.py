@@ -18,6 +18,7 @@ def _capture(*containers):
     def push(event_type, data):
         for c in containers:
             c.append((event_type, data))
+
     return push
 
 
@@ -43,9 +44,7 @@ class TestFeedAdapterBase:
         received = []
         loop, t = _make_loop()
         try:
-            feed = FeedAdapter(
-                event_type="test", engine_push=_capture(received)
-            )
+            feed = FeedAdapter(event_type="test", engine_push=_capture(received))
             feed.start(loop)
             df = pd.DataFrame({"ric": ["A"], "value": [1.0]})
             feed.on_update(df)
@@ -61,9 +60,7 @@ class TestFeedAdapterBase:
         received = []
         loop, t = _make_loop()
         try:
-            feed = FeedAdapter(
-                event_type="test", engine_push=_capture(received)
-            )
+            feed = FeedAdapter(event_type="test", engine_push=_capture(received))
             feed.start(loop)
             df = pd.DataFrame({"ric": ["B"], "value": [2.0]})
             feed._data_queue.put(df)
@@ -78,9 +75,7 @@ class TestFeedAdapterBase:
         received = []
         loop, t = _make_loop()
         try:
-            feed = FeedAdapter(
-                event_type="test", engine_push=_capture(received)
-            )
+            feed = FeedAdapter(event_type="test", engine_push=_capture(received))
             feed.start(loop)
             for i in range(5):
                 feed.on_update(pd.DataFrame({"v": [i]}))
@@ -94,9 +89,7 @@ class TestFeedAdapterBase:
         received = []
         loop, t = _make_loop()
         try:
-            feed = FeedAdapter(
-                event_type="test", engine_push=_capture(received)
-            )
+            feed = FeedAdapter(event_type="test", engine_push=_capture(received))
             feed.start(loop)
             feed.stop()
             time.sleep(0.1)
@@ -110,10 +103,7 @@ class TestFeedAdapterBase:
         received = []
         loop, t = _make_loop()
         try:
-            feed = FeedAdapter(
-                event_type="test",
-                engine_push=_capture_data(received),
-            )
+            feed = FeedAdapter(event_type="test", engine_push=_capture_data(received))
             feed.start(loop)
             feed.on_update(pd.DataFrame({"src": ["on_update"]}))
             feed._data_queue.put(pd.DataFrame({"src": ["queue"]}))
@@ -127,16 +117,10 @@ class TestFeedAdapterBase:
             _stop_loop(loop, t)
 
     def test_subscription_params_stored(self):
-        feed = FeedAdapter(
-            event_type="test",
-            engine_push=lambda et, d: None,
-            service_name="svc1",
-            table_name="tbl1",
-            recovery_query="select * from t",
-            recovery_params={"p": 1},
-            filter_query="ric in x",
-            filter_params={"x": ["A"]},
-        )
+        feed = FeedAdapter(event_type="test", engine_push=lambda et, d: None, ric_list=["A", "B"],
+                           service_name="svc1", table_name="tbl1", recovery_query="select * from t",
+                           recovery_params={"p": 1}, filter_query="ric in x", filter_params={"x": ["A"]})
+        assert feed._ric_list == ["A", "B"]
         assert feed._service_name == "svc1"
         assert feed._table_name == "tbl1"
         assert feed._recovery_query == "select * from t"
@@ -159,11 +143,7 @@ class TestFeedAdapterBase:
         fake = FakeThread()
         loop, t = _make_loop()
         try:
-            feed = FeedAdapter(
-                event_type="test",
-                engine_push=lambda et, d: None,
-                thread=fake,
-            )
+            feed = FeedAdapter(event_type="test", engine_push=lambda et, d: None, thread=fake)
             feed.start(loop)
             assert fake.started
             feed.stop()
@@ -183,14 +163,8 @@ class TestRiskAppetiteFeed:
         try:
             feed = RiskAppetiteFeed(engine_push=_capture(received))
             feed.start(loop)
-            df = pd.DataFrame({
-                "ric": ["0005.HK"],
-                "buy_state": ["best_bid"],
-                "buy_qty": [1000.0],
-                "sell_state": ["best_ask"],
-                "sell_qty": [2000.0],
-                "fx_rate": [0.128],
-            })
+            df = pd.DataFrame({"ric": ["0005.HK"], "buy_state": ["best_bid"], "buy_qty": [1000.0],
+                               "sell_state": ["best_ask"], "sell_qty": [2000.0], "fx_rate": [0.128]})
             feed.on_update(df)
             time.sleep(0.2)
             assert len(received) == 1
@@ -211,9 +185,7 @@ class TestLivePriceFeed:
         try:
             feed = LivePriceFeed(engine_push=_capture(received))
             feed.start(loop)
-            df = pd.DataFrame({
-                "ric": ["0005.HK"], "last_price": [60.0],
-            })
+            df = pd.DataFrame({"ric": ["0005.HK"], "last_price": [60.0]})
             feed.on_update(df)
             time.sleep(0.2)
             assert len(received) == 1
@@ -224,44 +196,40 @@ class TestLivePriceFeed:
 
 
 class TestInventoryFeed:
-    def test_register_and_start_market(self):
+    def test_event_type(self):
+        feed = InventoryFeed(engine_push=lambda et, d: None)
+        assert feed._event_type == "inventory"
+
+    def test_pushes_inventory_data(self):
         received = []
         loop, t = _make_loop()
         try:
-            feed = InventoryFeed(engine_push=_capture(received))
-            feed.set_loop(loop)
-            feed.register_market("HK")
-            feed.start_market("HK")
-            df = pd.DataFrame({
-                "ric": ["0005.HK"], "inventory": [5000.0],
-            })
+            feed = InventoryFeed(engine_push=_capture(received), ric_list=["0005.HK"])
+            feed.start(loop)
+            df = pd.DataFrame({"ric": ["0005.HK"], "inventory": [5000.0]})
             feed.on_update(df)
             time.sleep(0.3)
             assert len(received) == 1
             assert received[0][0] == "inventory"
         finally:
-            feed.stop_market("HK")
+            feed.stop()
             _stop_loop(loop, t)
 
-    def test_stop_market(self):
-        feed = InventoryFeed(engine_push=lambda et, d: None)
+    def test_start_stop(self):
         loop, t = _make_loop()
         try:
-            feed.set_loop(loop)
-            feed.register_market("HK")
-            feed.start_market("HK")
-            assert feed._markets["HK"]["running"] is True
-            feed.stop_market("HK")
-            assert feed._markets["HK"]["running"] is False
+            feed = InventoryFeed(engine_push=lambda et, d: None, ric_list=["0005.HK"])
+            feed.start(loop)
+            assert feed._running is True
+            feed.stop()
+            assert feed._running is False
         finally:
             _stop_loop(loop, t)
 
-    def test_multiple_markets(self):
-        feed = InventoryFeed(engine_push=lambda et, d: None)
-        feed.register_market("HK")
-        feed.register_market("TW")
-        assert "HK" in feed._markets
-        assert "TW" in feed._markets
+    def test_ric_list_stored(self):
+        rics = ["0005.HK", "0700.HK"]
+        feed = InventoryFeed(engine_push=lambda et, d: None, ric_list=rics)
+        assert feed._ric_list == rics
 
 
 class TestFillsFeed:
@@ -275,13 +243,8 @@ class TestFillsFeed:
         try:
             feed = FillsFeed(engine_push=_capture(received))
             feed.start(loop)
-            df = pd.DataFrame({
-                "ric": ["0005.HK"],
-                "side": ["buy"],
-                "fill_qty": [100.0],
-                "fill_price": [60.0],
-                "timestamp": pd.Timestamp.now(),
-            })
+            df = pd.DataFrame({"ric": ["0005.HK"], "side": ["buy"], "fill_qty": [100.0],
+                               "fill_price": [60.0], "timestamp": pd.Timestamp.now()})
             feed.on_update(df)
             time.sleep(0.2)
             assert len(received) == 1
@@ -292,56 +255,49 @@ class TestFillsFeed:
 
 
 class TestAlphaFeed:
-    def test_register_and_start_market(self):
+    def test_event_type(self):
+        feed = AlphaFeed(engine_push=lambda et, d: None)
+        assert feed._event_type == "alpha"
+
+    def test_start_sends_zero_stub(self):
         received = []
         loop, t = _make_loop()
         try:
-            feed = AlphaFeed(engine_push=_capture(received))
-            feed.set_loop(loop)
             rics = ["0005.HK", "0700.HK"]
-            feed.register_market("HK", rics=rics)
-            feed.start_market("HK")
+            feed = AlphaFeed(engine_push=_capture(received), ric_list=rics)
+            feed.start(loop)
             time.sleep(0.3)
-            # Should have zero-alpha stub
             assert len(received) >= 1
             df = received[0][1]
             assert list(df["ric"]) == rics
             assert all(df["alpha"] == 0.0)
         finally:
-            feed.stop_market("HK")
+            feed.stop()
             _stop_loop(loop, t)
 
     def test_on_update_pushes_alpha(self):
         received = []
         loop, t = _make_loop()
         try:
-            feed = AlphaFeed(engine_push=_capture(received))
-            feed.set_loop(loop)
-            feed.register_market("HK")
-            feed.start_market("HK")
-            df = pd.DataFrame({
-                "ric": ["0005.HK"], "alpha": [0.25],
-            })
+            feed = AlphaFeed(engine_push=_capture(received), ric_list=["0005.HK"])
+            feed.start(loop)
+            df = pd.DataFrame({"ric": ["0005.HK"], "alpha": [0.25]})
             feed.on_update(df)
             time.sleep(0.3)
-            alpha_events = [
-                r for r in received if r[0] == "alpha"
-            ]
+            alpha_events = [r for r in received if r[0] == "alpha"]
             assert len(alpha_events) >= 1
         finally:
-            feed.stop_market("HK")
+            feed.stop()
             _stop_loop(loop, t)
 
-    def test_stop_market(self):
-        feed = AlphaFeed(engine_push=lambda et, d: None)
+    def test_start_stop(self):
         loop, t = _make_loop()
         try:
-            feed.set_loop(loop)
-            feed.register_market("HK")
-            feed.start_market("HK")
-            assert feed._markets["HK"]["running"] is True
-            feed.stop_market("HK")
-            assert feed._markets["HK"]["running"] is False
+            feed = AlphaFeed(engine_push=lambda et, d: None, ric_list=["0005.HK"])
+            feed.start(loop)
+            assert feed._running is True
+            feed.stop()
+            assert feed._running is False
         finally:
             _stop_loop(loop, t)
 
@@ -350,11 +306,9 @@ class TestAlphaFeed:
         loop, t = _make_loop()
         try:
             feed = AlphaFeed(engine_push=_capture(received))
-            feed.set_loop(loop)
-            feed.register_market("HK")
-            feed.start_market("HK")
+            feed.start(loop)
             time.sleep(0.3)
             assert len(received) == 0
         finally:
-            feed.stop_market("HK")
+            feed.stop()
             _stop_loop(loop, t)

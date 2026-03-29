@@ -3,58 +3,75 @@
 ## 1. High-Level Overview
 **Goal:** A multi-asset market-making engine for dark pools using dynamic pricing and a real-time monitoring dashboard.
 **Core Workflow:**
-1. **Initialization:** Load market-specific TOML config; load stock universe from CSV; query lot sizes from desktool.
+1. **Initialization:** Load market-specific TOML config; load stock universe from CSV. `StateManager` queries lot sizes from desktool internally.
 2. **State:** Maintain a universe DataFrame (one row per RIC) as the single source of truth for all per-stock state.
 3. **Feeds:** Subscribe to KDB+ (Risk Appetite, Live Price, Inventory, Fills) and Alpha feeds via queue-based adapters. Feed updates merge into the DataFrame.
 4. **Quoting:** Compute sizes via a vectorized 4-step sizing pipeline. Apply inventory constraint at dispatch time. Dispatch in two modes: scheduled full batch and reactive partial update.
 5. **Monitoring:** A separate process GUI displays live status and PnL.
 
 ## 2. Technical Stack
-* **Language:** Python 3.11+
-* **Concurrency:** `asyncio` (Trading) + `threading` (Feed Subs) + `multiprocessing` (GUI).
-* **Configuration:** One `.toml` file per market (using `tomllib`) + one `.csv` for stock universe.
+* **Language:** Python 3.12+
+* **Concurrency:** `asyncio` (Trading) + `threading` (Feed Subs).
+* **Configuration:** TOML files (`tomllib`, stdlib) — `config.toml` for production, `simulator.toml` for simulator. Each has `[pimm]` general config, `[market_defaults]` shared defaults, and `[market.*]` per-market overrides + `.csv` for stock universe.
 * **State:** Single pandas DataFrame per market — all quoting logic uses vectorized operations.
-* **GUI Framework:** `PyQt6` + `pyqtdarktheme`.
+* **Web Dashboard:** FastAPI + WebSocket (single-file HTML/CSS/JS).
 * **Alerting:** `winsound.Beep` for heartbeat failures.
 
 ## 3. Configuration & Startup Logic
 
-### A. Hierarchical Config
-Each market has a standalone `.toml` file.
-* **Global Market Default:** Settings in `[market_settings]` apply to all stocks by default.
-* **Overrides:** Settings in `[overrides.stocks."RIC"]` take precedence over defaults for that specific ticker.
+### A. Config Structure (`configs/config.toml`)
 
-### B. Stock Universe
-* **Universe CSV:** A CSV file (path configured in TOML as `universe_file`) containing a single `ric` column.
-* **Lot Sizes:** Call `desktool.get_lot_size_table()` at startup for universe RICs. RICs with no lot size are skipped with a warning.
-* **Price Mode:** Determined at runtime from the Risk Appetite feed (`buy_state`, `sell_state`).
+Single TOML file with three sections: general settings (`[pimm]`), shared market defaults (`[market_defaults]`), and per-market overrides (`[market.*]`). Per-market values override `[market_defaults]`. Per-stock overrides use `[market.{name}.overrides]`.
 
-### C. Config Structure (`configs/config.toml`)
-
-The market name is the TOML section name. All settings live under it — no separate `[market_settings]` section. Per-stock overrides use `[overrides.stock_limit.{market}]`.
+Time field naming convention: suffix `_m` for minutes, `_s` for seconds.
 
 ```toml
-[HK]
-timezone = "Asia/Hong_Kong"
+[pimm]
+web_port = 8080
+max_staleness_s = 30            # seconds — heartbeat feed staleness threshold
+full_batch_interval_m = 10      # minutes between full batch updates
+min_dispatch_interval_s = 5     # seconds between any two dispatches
+delta_beta_interval_s = 5       # seconds between delta/beta info polls
+recipients = ["user1@company.com"]
+
+[market_defaults]
+order_valid_time_m = 5          # minutes — quote validity
+refresh_buffer_s = 15           # seconds — proactive refresh before expiry
+single_name_cap = 50000
+max_buy_notional = 10000000     # USD
+max_sell_notional = 10000000    # USD
+partial_change_threshold = 0.10
+refill_fill_threshold = 0.50
+alpha_enabled = false
+
+[market.HK]
 universe_file = "configs/hk_universe.csv"
 sessions = ["09:30-12:00", "13:00-16:00"]
-order_valid_time = 5          # minutes
-refresh_buffer = 15           # seconds
-full_batch_interval = 10      # minutes between full batch updates
-min_dispatch_interval = 5     # seconds between any two dispatches
-single_name_cap = 50000
-max_buy_notional = 10000000   # USD
-max_sell_notional = 10000000  # USD
-max_staleness = 30            # seconds
-partial_change_threshold = 0.10   # 10% change required for partial update
-refill_fill_threshold = 0.50      # 50% filled to trigger refill
+alpha_enabled = true            # override default
 
-[overrides.stock_limit.HK]
-"0005.HK" = 100000      # HSBC gets higher limit
-"0700.HK" = 20000       # Tencent gets lower limit
+[market.HK.overrides]
+"0005.HK" = 100000
+"0700.HK" = 20000
+
+[market.TW]
+universe_file = "configs/tw_universe.csv"
+sessions = ["09:00-13:30"]
+order_valid_time_m = 10         # override default for this market
 ```
 
-Config loader (`configs/config.py`) reads the TOML, resolves overrides, and returns a `MarketConfig` object.
+### B. Config Classes
+
+- **`PimmConfig`** — general project settings: `web_port`, `max_staleness_s`, `full_batch_interval_m`, `min_dispatch_interval_s`, `delta_beta_interval_s`, `recipients`
+- **`MarketConfig`** — per-market settings: `name`, `sessions`, `order_valid_time_m`, `refresh_buffer_s`, `single_name_cap`, `max_buy_notional`, `max_sell_notional`, `partial_change_threshold`, `refill_fill_threshold`, `universe_file`, `stock_limit_overrides`, `alpha_enabled`
+
+### C. Defaults Mechanism
+
+Config loader merges `[market_defaults]` with each `[market.*]` table — per-market values win. Any field in `[market_defaults]` can be overridden per market. Fields not present in either get hardcoded defaults.
+
+### D. Stock Universe
+* **Universe CSV:** A CSV file (path configured as `universe_file`) containing a single `ric` column.
+* **Lot Sizes:** Call `desktool.get_lot_size_table()` at startup for universe RICs. RICs with no lot size are skipped with a warning.
+* **Price Mode:** Determined at runtime from the Risk Appetite feed (`buy_state`, `sell_state`).
 
 ## 4. Universe DataFrame
 
@@ -188,6 +205,6 @@ The GUI runs in a **separate process** using a `multiprocessing.Queue` to receiv
 * **Status Bar:** Connection status for KDB+ and Alpha feeds; session countdown timer.
 
 ## 12. Safety & Watchdog
-* **Heartbeat:** Monitor KDB+ feed staleness. If `> max_staleness`, stop quoting and trigger `winsound`.
+* **Heartbeat:** Monitor KDB+ feed staleness. If `> max_staleness_s`, stop quoting and trigger `winsound`.
 * **Session Termination:** On session end, send a "cancel all" (zero-size) batch.
 * **Notional Limit:** Total dispatched notional (USD) per side must not exceed `max_buy/sell_notional`. Enforced by scaling in full batch and notional check in partial update.

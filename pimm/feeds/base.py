@@ -8,13 +8,12 @@ logger = logging.getLogger(__name__)
 
 
 class FeedAdapter:
-
-    def __init__(self, event_type, engine_push, thread=None,
-                 service_name=None, table_name=None,
-                 recovery_query=None, recovery_params=None,
-                 filter_query=None, filter_params=None):
+    def __init__(self, event_type, engine_push, ric_list=None, market_name="ALL", thread=None, service_name=None,
+                 table_name=None, recovery_query=None, recovery_params=None, filter_query=None, filter_params=None):
         self._event_type = event_type
+        self._market_name = market_name
         self._engine_push = engine_push
+        self._ric_list = ric_list or []
         self._ext_thread = thread
         self._service_name = service_name
         self._table_name = table_name
@@ -36,13 +35,8 @@ class FeedAdapter:
                 self._ext_thread.start()
                 logger.info(f"Feed {et}: external thread started")
             except Exception:
-                logger.exception(
-                    f"Feed {et}: failed to start external thread"
-                )
-        self._poll_thread = threading.Thread(
-            target=self._poll_loop,
-            name=f"feed-{et}", daemon=True,
-        )
+                logger.exception(f"Feed {et}: failed to start external thread")
+        self._poll_thread = threading.Thread(target=self._poll_loop, name=f"feed-{et}", daemon=True)
         self._poll_thread.start()
         logger.info(f"Feed {et} started")
 
@@ -55,9 +49,7 @@ class FeedAdapter:
                     self._ext_thread.stop()
                 logger.info(f"Feed {et}: external thread stopped")
             except Exception:
-                logger.exception(
-                    f"Feed {et}: failed to stop external thread"
-                )
+                logger.exception(f"Feed {et}: failed to stop external thread")
         logger.info(f"Feed {et} stopping")
 
     def _poll_loop(self):
@@ -70,9 +62,8 @@ class FeedAdapter:
 
     def _push(self, data):
         if self._running:
-            self._loop.call_soon_threadsafe(
-                self._engine_push, self._event_type, data
-            )
+            logger.info(f"Feed {self._event_type} [{self._market_name}]: pushed {len(data)} rows")
+            self._loop.call_soon_threadsafe(self._engine_push, self._event_type, data)
 
     def on_update(self, df):
         self._push(df)

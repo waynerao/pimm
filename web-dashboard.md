@@ -16,6 +16,7 @@ This document describes the web dashboard UI in detail, split out from pimm.md f
 - `server.install_signal_handlers = lambda: None` prevents uvicorn from overriding Ctrl+C
 - Token validated via `request.query_params.get("token")` / `ws.query_params.get("token")`
 - DOM controls built once with `addEventListener` (not innerHTML replacement) for button responsiveness
+- Client IP logged on WebSocket connect, disconnect, and all commands (e.g. `Command 'start' for [HK] from 192.168.1.50`)
 
 ## 2. Layout Structure
 
@@ -70,7 +71,7 @@ Per-market row with:
 - Buttons: **Start**, **Stop**, **View Params**, **Reload Params**
 
 **Button behavior:**
-- **Start:** Sets `quoting_enabled = True`. If currently in a session window, immediately activates session, starts per-market feeds, and dispatches a full batch.
+- **Start:** If `day_type == 0`, or `day_type == 0.5` and past the first session window, the frontend shows a JS confirmation dialog (e.g., "Non-trading day — start quoting for HK (session 13:00-16:00)?"). On confirm (or when no warning needed), sends start command. Engine activates the current or next upcoming session window, starts per-market feeds, and dispatches a full batch. The `day_type` value is available in the snapshot data for frontend logic.
 - **Stop:** Sends cancel-all (zeros all live quotes), sets `session_active = False`, stops per-market feeds.
 - **View Params:** Opens a modal showing the market's current config (sessions, order validity, intervals, caps, thresholds, alpha_enabled). Does not show derived/runtime values like scaling or stock count.
 - **Reload Params:** Re-reads `config.cfg` from disk for that market. Preserves current session override (e.g., simulator's `00:00-23:59` is not overwritten). Preserves current active/inactive status.
@@ -95,13 +96,22 @@ Notional values are in USD (qty × last_price × fx_rate). Format: `number / num
 
 Tab title: **Delta and Beta**
 
-Displays the latest string from `desktool.get_delta_beta_info()`, queried at `delta_beta_interval` seconds. Empty when no data available.
+Displays the latest string from `desktool.get_delta_beta_info()`, queried at `delta_beta_interval` seconds. Empty when no data available. Uses flex layout with internal scroll.
+
+**Filter** (right-aligned in header):
+- **Text** input: regex filter (case-insensitive) — filters lines of the delta/beta text, showing only matching lines.
 
 ### Log Panel (right)
 
 Tab title: **Log**
 
-Scrolling log area showing engine messages at CRITICAL level and above. Red text on dark background. Auto-scrolls to bottom on new entries.
+Scrolling log area showing engine log messages (INFO+ captured via `WebLogHandler`). Stores up to 500 structured `{level, msg}` entries. Auto-scrolls to bottom on new entries. Uses flex layout with internal scroll — no outer scrollbar.
+
+**Filters** (right-aligned in header, matching Country/RIC filter style):
+- **Level** dropdown: DEBUG / INFO (default) / WARNING / ERROR / CRITICAL — shows logs at or above selected level
+- **Text** input: regex filter (case-insensitive) on log message content
+
+**Color coding:** gray=DEBUG, white=INFO, yellow=WARNING, red+bold=ERROR and CRITICAL.
 
 ## 5. Bottom Section — Tabs
 

@@ -1,12 +1,11 @@
-# Config loader using configparser + universe CSV loader
+# Config loader using tomllib (stdlib) + universe CSV loader
 
-import configparser
 import csv
+import tomllib
 from pathlib import Path
 
 
 class SessionWindow:
-
     def __init__(self, sh, sm, eh, em):
         self.start_hour, self.start_minute = sh, sm
         self.end_hour, self.end_minute = eh, em
@@ -19,25 +18,28 @@ class SessionWindow:
         return cls(sh, sm, eh, em)
 
 
-class MarketConfig:
+class PimmConfig:
+    def __init__(self, web_port=8080, max_staleness_s=30, full_batch_interval_m=10, min_dispatch_interval_s=5,
+                 delta_beta_interval_s=5, recipients=None):
+        self.web_port = web_port
+        self.max_staleness_s = max_staleness_s
+        self.full_batch_interval_m = full_batch_interval_m
+        self.min_dispatch_interval_s = min_dispatch_interval_s
+        self.delta_beta_interval_s = delta_beta_interval_s
+        self.recipients = recipients or []
 
-    def __init__(self, name, sessions, order_valid_time,
-                 refresh_buffer, full_batch_interval,
-                 min_dispatch_interval, single_name_cap,
-                 max_buy_notional, max_sell_notional,
-                 max_staleness, partial_change_threshold=0.10,
-                 refill_fill_threshold=0.50, universe_file=None,
-                 stock_limit_overrides=None, alpha_enabled=False):
+
+class MarketConfig:
+    def __init__(self, name, sessions, order_valid_time_m=5, refresh_buffer_s=15, single_name_cap=50000,
+                 max_buy_notional=10_000_000, max_sell_notional=10_000_000, partial_change_threshold=0.10,
+                 refill_fill_threshold=0.50, universe_file=None, stock_limit_overrides=None, alpha_enabled=False):
         self.name = name
         self.sessions = sessions
-        self.order_valid_time = order_valid_time
-        self.refresh_buffer = refresh_buffer
-        self.full_batch_interval = full_batch_interval
-        self.min_dispatch_interval = min_dispatch_interval
+        self.order_valid_time_m = order_valid_time_m
+        self.refresh_buffer_s = refresh_buffer_s
         self.single_name_cap = single_name_cap
         self.max_buy_notional = max_buy_notional
         self.max_sell_notional = max_sell_notional
-        self.max_staleness = max_staleness
         self.partial_change_threshold = partial_change_threshold
         self.refill_fill_threshold = refill_fill_threshold
         self.universe_file = universe_file
@@ -45,95 +47,47 @@ class MarketConfig:
         self.alpha_enabled = alpha_enabled
 
     def get_stock_limit(self, ric):
-        return self.stock_limit_overrides.get(
-            ric, self.single_name_cap
-        )
+        return self.stock_limit_overrides.get(ric, self.single_name_cap)
 
 
-def load_config(path, market_name):
-    path = Path(path)
-    parser = configparser.ConfigParser()
-    parser.optionxform = str
-    parser.read(str(path))
-    sec = parser[market_name]
+def _load_toml(path):
+    with open(Path(path), "rb") as f:
+        return tomllib.load(f)
 
-    sessions = [
-        SessionWindow.parse(s.strip())
-        for s in sec.get("sessions", "").split(",") if s.strip()
-    ]
 
-    overrides = {}
-    ov_sec = f"{market_name}.overrides"
-    if parser.has_section(ov_sec):
-        for ric, val in parser.items(ov_sec):
-            overrides[ric] = float(val)
+def load_pimm_config(path):
+    sec = _load_toml(path).get("pimm", {})
+    return PimmConfig(
+        web_port=sec.get("web_port", 8080), max_staleness_s=sec.get("max_staleness_s", 30),
+        full_batch_interval_m=sec.get("full_batch_interval_m", 10),
+        min_dispatch_interval_s=sec.get("min_dispatch_interval_s", 5),
+        delta_beta_interval_s=sec.get("delta_beta_interval_s", 5), recipients=sec.get("recipients", []))
 
-    g = sec.get
-    gb = sec.getboolean
+
+def load_market_config(path, market_name):
+    data = _load_toml(path)
+    defaults = data.get("market_defaults", {})
+    market_data = data.get("market", {}).get(market_name, {})
+    merged = {**defaults, **{k: v for k, v in market_data.items() if k != "overrides"}}
+    sessions = [SessionWindow.parse(s) for s in merged.get("sessions", [])]
+    overrides = {k: float(v) for k, v in market_data.get("overrides", {}).items()}
     return MarketConfig(
-        name=market_name, sessions=sessions,
-        order_valid_time=int(g("order_valid_time", "5")),
-        refresh_buffer=int(g("refresh_buffer", "15")),
-        full_batch_interval=int(g("full_batch_interval", "10")),
-        min_dispatch_interval=int(g("min_dispatch_interval", "5")),
-        single_name_cap=float(g("single_name_cap", "50000")),
-        max_buy_notional=float(g("max_buy_notional", "10000000")),
-        max_sell_notional=float(g("max_sell_notional", "10000000")),
-        max_staleness=int(g("max_staleness", "30")),
-        partial_change_threshold=float(
-            g("partial_change_threshold", "0.10")),
-        refill_fill_threshold=float(
-            g("refill_fill_threshold", "0.50")),
-        universe_file=g("universe_file"),
-        stock_limit_overrides=overrides,
-        alpha_enabled=gb("alpha_enabled", fallback=False),
-    )
+        name=market_name, sessions=sessions, order_valid_time_m=merged.get("order_valid_time_m", 5),
+        refresh_buffer_s=merged.get("refresh_buffer_s", 15), single_name_cap=merged.get("single_name_cap", 50000),
+        max_buy_notional=merged.get("max_buy_notional", 10_000_000),
+        max_sell_notional=merged.get("max_sell_notional", 10_000_000),
+        partial_change_threshold=merged.get("partial_change_threshold", 0.10),
+        refill_fill_threshold=merged.get("refill_fill_threshold", 0.50),
+        universe_file=merged.get("universe_file"), stock_limit_overrides=overrides,
+        alpha_enabled=merged.get("alpha_enabled", False))
 
 
 def load_all_markets(path):
-    path = Path(path)
-    parser = configparser.ConfigParser()
-    parser.optionxform = str
-    parser.read(str(path))
+    data = _load_toml(path)
     configs = {}
-    skip = {"web", "DEFAULT"}
-    for name in parser.sections():
-        if "." in name or name in skip:
-            continue
-        configs[name] = load_config(path, name)
+    for name in data.get("market", {}):
+        configs[name] = load_market_config(path, name)
     return configs
-
-
-def reload_market_config(path, market_name):
-    return load_config(path, market_name)
-
-
-class WebConfig:
-
-    def __init__(self, port=8080, recipients=None,
-                 delta_beta_interval=5):
-        self.port = port
-        self.recipients = recipients or []
-        self.delta_beta_interval = delta_beta_interval
-
-
-def load_web_config(path):
-    path = Path(path)
-    parser = configparser.ConfigParser()
-    parser.optionxform = str
-    parser.read(str(path))
-    if not parser.has_section("web"):
-        return WebConfig()
-    sec = parser["web"]
-    recipients = [
-        r.strip()
-        for r in sec.get("recipients", "").split(",") if r.strip()
-    ]
-    return WebConfig(
-        port=int(sec.get("port", "8080")),
-        recipients=recipients,
-        delta_beta_interval=int(sec.get("delta_beta_interval", "5")),
-    )
 
 
 def load_universe(csv_path):

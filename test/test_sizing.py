@@ -3,40 +3,43 @@
 import pandas as pd
 import pytest
 
-from pimm.engine.sizing import (
-    apply_inventory_constraint,
-    compute_optimal_cached,
-    compute_optimal_quotes,
-)
+from pimm.engine.sizing import apply_inventory_constraint, compute_optimal_cached, compute_optimal_quotes
 
 
-def _make_df(buy_raw, sell_raw, alpha=0.0, stock_limit=50000.0,
-             last_price=100.0, fx_rate=1.0, lot_size=100, inventory=10000.0):
+def _make_df(
+    buy_raw, sell_raw, alpha=0.0, stock_limit=50000.0, last_price=100.0, fx_rate=1.0, lot_size=100, inventory=10000.0
+):
     # Helper to build a single-row universe DataFrame
-    return pd.DataFrame({
-        "buy_raw": [buy_raw],
-        "sell_raw": [sell_raw],
-        "alpha": [alpha],
-        "stock_limit": [stock_limit],
-        "last_price": [last_price],
-        "fx_rate": [fx_rate],
-        "lot_size": [lot_size],
-        "inventory": [inventory],
-    }, index=pd.Index(["TEST.HK"], name="ric"))
+    return pd.DataFrame(
+        {
+            "buy_raw": [buy_raw],
+            "sell_raw": [sell_raw],
+            "alpha": [alpha],
+            "stock_limit": [stock_limit],
+            "last_price": [last_price],
+            "fx_rate": [fx_rate],
+            "lot_size": [lot_size],
+            "inventory": [inventory],
+        },
+        index=pd.Index(["TEST.HK"], name="ric"),
+    )
 
 
 def _make_multi_df():
     # 2-stock DataFrame for scaling tests
-    return pd.DataFrame({
-        "buy_raw": [600.0, 600.0],
-        "sell_raw": [100.0, 100.0],
-        "alpha": [0.0, 0.0],
-        "stock_limit": [50000.0, 50000.0],
-        "last_price": [1.0, 1.0],
-        "fx_rate": [1.0, 1.0],
-        "lot_size": [100, 100],
-        "inventory": [10000.0, 10000.0],
-    }, index=pd.Index(["A", "B"], name="ric"))
+    return pd.DataFrame(
+        {
+            "buy_raw": [600.0, 600.0],
+            "sell_raw": [100.0, 100.0],
+            "alpha": [0.0, 0.0],
+            "stock_limit": [50000.0, 50000.0],
+            "last_price": [1.0, 1.0],
+            "fx_rate": [1.0, 1.0],
+            "lot_size": [100, 100],
+            "inventory": [10000.0, 10000.0],
+        },
+        index=pd.Index(["A", "B"], name="ric"),
+    )
 
 
 class TestAlphaSkew:
@@ -55,7 +58,7 @@ class TestAlphaSkew:
     def test_negative_alpha_inflates_sell(self):
         df = _make_df(100.0, 200.0, alpha=-0.5)
         result, _, _ = compute_optimal_quotes(df, 1e9, 1e9)
-        assert result.at["TEST.HK", "buy_optimal"] == 0.0    # 50 rounded to 0
+        assert result.at["TEST.HK", "buy_optimal"] == 0.0  # 50 rounded to 0
         assert result.at["TEST.HK", "sell_optimal"] == 300.0
 
     def test_max_positive_alpha(self):
@@ -172,8 +175,7 @@ class TestFullPipeline:
         # scaling=1.0 (within 1e9 limit): buy=600, sell=560
         # lot=100: buy=600, sell=500
         # inventory=400: sell_dispatch=min(500,400)=400
-        df = _make_df(500.0, 800.0, alpha=0.3, stock_limit=600.0,
-                      lot_size=100, inventory=400.0)
+        df = _make_df(500.0, 800.0, alpha=0.3, stock_limit=600.0, lot_size=100, inventory=400.0)
         optimal, _, _ = compute_optimal_quotes(df, 1e9, 1e9)
         dispatch = apply_inventory_constraint(optimal, df)
         assert dispatch.at["TEST.HK", "buy_dispatch"] == 600.0
@@ -185,8 +187,7 @@ class TestFullPipeline:
         # Use cached scaling=0.9: buy=540, sell=504
         # lot=100: buy=500, sell=500
         # inventory=400: sell_dispatch=min(500,400)=400
-        df = _make_df(500.0, 800.0, alpha=0.3, stock_limit=600.0,
-                      lot_size=100, inventory=400.0)
+        df = _make_df(500.0, 800.0, alpha=0.3, stock_limit=600.0, lot_size=100, inventory=400.0)
         optimal = compute_optimal_cached(df, 0.9, 0.9)
         dispatch = apply_inventory_constraint(optimal, df)
         assert dispatch.at["TEST.HK", "buy_dispatch"] == 500.0

@@ -27,12 +27,9 @@ class TradeFill:
 
 
 class EngineSnapshot:
-
-    def __init__(self, markets, scaling, recent_fills,
-                 session_status, session_countdowns, feed_status,
-                 timestamp, last_full_batch_times=None,
-                 delta_beta_info="", console_log=None,
-                 market_configs=None):
+    def __init__(self, markets, scaling, recent_fills, session_status, session_countdowns, feed_status,
+                 timestamp, last_full_batch_times=None, delta_beta_info="", console_log=None,
+                 market_configs=None, day_types=None, pimm_config=None):
         self.markets = markets
         self.scaling = scaling
         self.recent_fills = recent_fills
@@ -44,3 +41,5 @@ class EngineSnapshot:
         self.delta_beta_info = delta_beta_info
         self.console_log = console_log or []
         self.market_configs = market_configs or {}
+        self.day_types = day_types or {}
+        self.pimm_config = pimm_config

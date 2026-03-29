@@ -43,7 +43,7 @@ body { background: var(--bg); color: var(--fg); font-family: 'Consolas','Courier
 .market-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--border); }
 .market-row:last-child { border-bottom: none; }
 .market-name { font-weight: bold; min-width: 40px; color: var(--yellow); }
-.market-session { min-width: 100px; color: var(--fg2); }
+.market-session { width: 220px; flex-shrink: 0; color: var(--fg2); }
 .market-status { min-width: 70px; font-weight: bold; }
 .market-status.active { color: var(--green); }
 .market-status.inactive { color: var(--fg2); }
@@ -57,9 +57,12 @@ button:hover { background: var(--border); }
 
 /* Middle area */
 .middle { flex: 0 0 200px; display: flex; gap: 0; }
-.mid-left { flex: 1; }
-.mid-right { flex: 1; }
-.log-area { height: calc(100% - 30px); overflow-y: auto; font-size: 12px; color: var(--red); background: var(--bg); padding: 4px; border-radius: 4px; }
+.mid-left { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.mid-left h3 { flex-shrink: 0; }
+.delta-beta-text { flex: 1; overflow-y: auto; }
+.mid-right { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.mid-right h3 { flex-shrink: 0; }
+.log-area { flex: 1; overflow-y: auto; font-size: 12px; background: var(--bg); padding: 4px; border-radius: 4px; }
 .delta-beta-text { padding: 8px; font-size: 14px; color: var(--yellow); }
 
 /* Bottom area — tabs */
@@ -140,12 +143,28 @@ select { background: var(--bg3); color: var(--fg); border: 1px solid var(--borde
   <!-- Middle -->
   <div class="middle" id="section-mid" style="min-height:60px;">
     <div class="panel mid-left">
-      <h3>Delta and Beta</h3>
+      <h3 style="display:flex;align-items:center;gap:8px;">Delta and Beta
+        <span style="flex:1;"></span>
+        <label style="color:var(--fg2);font-weight:normal;">Text:</label>
+        <input id="db-filter" type="text" placeholder="regex" oninput="renderDeltaBeta(latestData)" style="background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:3px 8px;font-family:inherit;font-size:12px;width:100px;">
+      </h3>
       <div id="delta-beta" class="delta-beta-text"></div>
     </div>
     <div class="resize-v" data-resize="mid-h"></div>
     <div class="panel mid-right">
-      <h3>Log</h3>
+      <h3 style="display:flex;align-items:center;gap:8px;">Log
+        <span style="flex:1;"></span>
+        <label style="color:var(--fg2);font-weight:normal;">Level:</label>
+        <select id="log-level" onchange="renderConsoleLog(latestData)">
+          <option value="DEBUG">DEBUG</option>
+          <option value="INFO" selected>INFO</option>
+          <option value="WARNING">WARNING</option>
+          <option value="ERROR">ERROR</option>
+          <option value="CRITICAL">CRITICAL</option>
+        </select>
+        <label style="color:var(--fg2);font-weight:normal;">Text:</label>
+        <input id="log-filter" type="text" placeholder="regex" oninput="renderConsoleLog(latestData)" style="background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:3px 8px;font-family:inherit;font-size:12px;width:100px;">
+      </h3>
       <div id="console-log" class="log-area"></div>
     </div>
   </div>
@@ -490,6 +509,37 @@ function sendCmd(action, market) {
   }
 }
 
+function handleStart(market) {
+  if (!latestData) { sendCmd('start', market); return; }
+  const dt = latestData.day_types ? latestData.day_types[market] : 1;
+  const cfg = latestData.market_configs ? latestData.market_configs[market] : null;
+  let warn = false;
+  let msg = '';
+  if (dt === 0) {
+    warn = true;
+    msg = 'Non-trading day \u2014 start quoting for ' + market + '?';
+  } else if (dt === 0.5 && cfg && cfg.sessions) {
+    const parts = cfg.sessions.split(',');
+    if (parts.length > 0) {
+      const firstEnd = parts[0].trim().split('-')[1];
+      if (firstEnd) {
+        const now = new Date();
+        const hm = firstEnd.trim().split(':');
+        const endMin = parseInt(hm[0]) * 60 + parseInt(hm[1]);
+        const nowMin = now.getHours() * 60 + now.getMinutes();
+        if (nowMin >= endMin) {
+          warn = true;
+          msg = 'Half day \u2014 past first session window. Start quoting for ' + market + ' (session ' + (parts.length > 1 ? parts[1].trim() : parts[0].trim()) + ')?';
+        }
+      }
+    }
+  }
+  if (warn) {
+    if (!confirm(msg)) return;
+  }
+  sendCmd('start', market);
+}
+
 function switchTab(tab) {
   currentTab = tab;
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -577,7 +627,7 @@ function buildControls(d) {
       '<button id="ctrl-view-' + m + '">View Params</button>' +
       '<button id="ctrl-reload-' + m + '">Reload Params</button>';
     el.appendChild(row);
-    document.getElementById('ctrl-start-' + m).addEventListener('click', function() { sendCmd('start', m); });
+    document.getElementById('ctrl-start-' + m).addEventListener('click', function() { handleStart(m); });
     document.getElementById('ctrl-stop-' + m).addEventListener('click', function() { sendCmd('stop', m); });
     document.getElementById('ctrl-view-' + m).addEventListener('click', function() { viewParams(m); });
     document.getElementById('ctrl-reload-' + m).addEventListener('click', function() { sendCmd('reload', m); });
@@ -658,16 +708,42 @@ function renderSummary(d) {
 }
 
 function renderDeltaBeta(d) {
+  if (!d) return;
   const el = document.getElementById('delta-beta');
-  el.textContent = d.delta_beta_info || '';
+  const raw = d.delta_beta_info || '';
+  const filterVal = document.getElementById('db-filter').value.trim();
+  if (!filterVal) { el.textContent = raw; return; }
+  let re = null;
+  try { re = new RegExp(filterVal, 'i'); } catch(e) {}
+  if (!re) { el.textContent = raw; return; }
+  const lines = raw.split('\n').filter(l => re.test(l));
+  el.textContent = lines.join('\n');
 }
 
+const LOG_LEVELS = {DEBUG: 10, INFO: 20, WARNING: 30, ERROR: 40, CRITICAL: 50};
+const LOG_COLORS = {DEBUG: 'var(--fg2)', INFO: 'var(--fg)', WARNING: 'var(--yellow)', ERROR: 'var(--red)', CRITICAL: 'var(--red)'};
+
 function renderConsoleLog(d) {
+  if (!d) return;
   const el = document.getElementById('console-log');
-  if (d.console_log && d.console_log.length > 0) {
-    el.innerHTML = d.console_log.map(l => '<div>' + escHtml(l) + '</div>').join('');
-    el.scrollTop = el.scrollHeight;
+  const logs = d.console_log || [];
+  if (logs.length === 0) return;
+  const minLevel = LOG_LEVELS[document.getElementById('log-level').value] || 20;
+  const filterVal = document.getElementById('log-filter').value.trim();
+  let filterRe = null;
+  if (filterVal) { try { filterRe = new RegExp(filterVal, 'i'); } catch(e) {} }
+  let html = '';
+  for (const entry of logs) {
+    const lvl = typeof entry === 'object' ? entry.level : 'INFO';
+    const msg = typeof entry === 'object' ? entry.msg : entry;
+    if ((LOG_LEVELS[lvl] || 20) < minLevel) continue;
+    if (filterRe && !filterRe.test(msg)) continue;
+    const color = LOG_COLORS[lvl] || 'var(--fg)';
+    const weight = lvl === 'CRITICAL' || lvl === 'ERROR' ? 'font-weight:bold;' : '';
+    html += '<div style="color:' + color + ';' + weight + '">' + escHtml(msg) + '</div>';
   }
+  el.innerHTML = html;
+  el.scrollTop = el.scrollHeight;
 }
 
 function renderQuotingTable(d) {
@@ -740,16 +816,17 @@ function viewParams(market) {
   if (!latestData) return;
   const cfg = latestData.market_configs ? latestData.market_configs[market] : null;
   if (!cfg) return;
+  const pc = latestData.pimm_config || {};
   let text =
     'Sessions: ' + cfg.sessions +
-    '\nOrder Valid Time: ' + cfg.order_valid_time + 's' +
-    '\nRefresh Buffer: ' + cfg.refresh_buffer + 's' +
-    '\nFull Batch Interval: ' + cfg.full_batch_interval + ' min' +
-    '\nMin Dispatch Interval: ' + cfg.min_dispatch_interval + 's' +
+    '\nOrder Valid Time: ' + cfg.order_valid_time_m + ' min' +
+    '\nRefresh Buffer: ' + cfg.refresh_buffer_s + 's' +
+    '\nFull Batch Interval: ' + pc.full_batch_interval_m + ' min' +
+    '\nMin Dispatch Interval: ' + pc.min_dispatch_interval_s + 's' +
     '\nSingle Name Cap: $' + fmtInt(cfg.single_name_cap) +
     '\nMax Buy Notional: $' + fmtInt(cfg.max_buy_notional) +
     '\nMax Sell Notional: $' + fmtInt(cfg.max_sell_notional) +
-    '\nMax Staleness: ' + cfg.max_staleness + 's' +
+    '\nMax Staleness: ' + pc.max_staleness_s + 's' +
     '\nPartial Change Threshold: ' + (cfg.partial_change_threshold * 100).toFixed(0) + '%' +
     '\nRefill Fill Threshold: ' + (cfg.refill_fill_threshold * 100).toFixed(0) + '%' +
     '\nAlpha Enabled: ' + (cfg.alpha_enabled ? 'Yes' : 'No');
