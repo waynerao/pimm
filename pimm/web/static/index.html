@@ -208,6 +208,7 @@ select { background: var(--bg3); color: var(--fg); border: 1px solid var(--borde
               <table id="trades-table">
                 <thead><tr>
                   <th class="resizable">RIC</th><th class="num resizable">Buy Not.</th><th class="num resizable">Sell Not.</th>
+                  <th class="num resizable">Buy Not. (USD)</th><th class="num resizable">Sell Not. (USD)</th>
                   <th class="num resizable">PnL</th><th class="num resizable">Ratio</th>
                 </tr></thead>
                 <tbody id="summary-body"></tbody>
@@ -704,7 +705,10 @@ function renderSummary(d) {
   }
   html += '<td class="num ' + pnlClass(totUsd) + '">$' + fmtNum(totUsd, 2) + '</td></tr>';
 
-  body.innerHTML = html;
+  if (body._lastHtml !== html) {
+    body._lastHtml = html;
+    body.innerHTML = html;
+  }
 }
 
 function renderDeltaBeta(d) {
@@ -712,12 +716,16 @@ function renderDeltaBeta(d) {
   const el = document.getElementById('delta-beta');
   const raw = d.delta_beta_info || '';
   const filterVal = document.getElementById('db-filter').value.trim();
-  if (!filterVal) { el.textContent = raw; return; }
-  let re = null;
-  try { re = new RegExp(filterVal, 'i'); } catch(e) {}
-  if (!re) { el.textContent = raw; return; }
-  const lines = raw.split('\n').filter(l => re.test(l));
-  el.textContent = lines.join('\n');
+  let newText = raw;
+  if (filterVal) {
+    try {
+      const re = new RegExp(filterVal, 'i');
+      newText = raw.split('\n').filter(l => re.test(l)).join('\n');
+    } catch(e) {}
+  }
+  if (el.textContent !== newText) {
+    el.textContent = newText;
+  }
 }
 
 const LOG_LEVELS = {DEBUG: 10, INFO: 20, WARNING: 30, ERROR: 40, CRITICAL: 50};
@@ -742,8 +750,14 @@ function renderConsoleLog(d) {
     const weight = lvl === 'CRITICAL' || lvl === 'ERROR' ? 'font-weight:bold;' : '';
     html += '<div style="color:' + color + ';' + weight + '">' + escHtml(msg) + '</div>';
   }
-  el.innerHTML = html;
-  el.scrollTop = el.scrollHeight;
+  if (el._lastHtml !== html) {
+    const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 5;
+    el._lastHtml = html;
+    el.innerHTML = html;
+    if (isAtBottom) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }
 }
 
 function renderQuotingTable(d) {
@@ -763,7 +777,10 @@ function renderQuotingTable(d) {
     }
     html += '</tr>';
   }
-  body.innerHTML = html;
+  if (body._lastHtml !== html) {
+    body._lastHtml = html;
+    body.innerHTML = html;
+  }
 }
 
 function renderFills(d) {
@@ -784,7 +801,11 @@ function renderFills(d) {
     const cls = f.side === 'buy' ? 'fill-buy' : 'fill-sell';
     html += '<div class="fill-line ' + cls + '">[' + f.time + '] ' + fm + ' ' + f.side.toUpperCase() + ' ' + f.ric + ' qty=' + fmtInt(f.qty) + ' @ ' + fmtNum(f.price, 4) + '</div>';
   }
-  el.innerHTML = html || '<div style="color:var(--fg2)">No fills yet</div>';
+  const finalHtml = html || '<div style="color:var(--fg2)">No fills yet</div>';
+  if (el._lastHtml !== finalHtml) {
+    el._lastHtml = finalHtml;
+    el.innerHTML = finalHtml;
+  }
 }
 
 function renderTradeSummary(d) {
@@ -805,11 +826,17 @@ function renderTradeSummary(d) {
       '<td>' + r.ric + '</td>' +
       '<td class="num">' + fmtNum(r.buy_notional, 0) + '</td>' +
       '<td class="num">' + fmtNum(r.sell_notional, 0) + '</td>' +
+      '<td class="num">' + fmtNum(r.buy_notional * r.fx_rate, 0) + '</td>' +
+      '<td class="num">' + fmtNum(r.sell_notional * r.fx_rate, 0) + '</td>' +
       '<td class="num ' + pnlClass(r.pnl_local) + '">' + fmtNum(r.pnl_local, 2) + '</td>' +
       '<td class="num">' + fmtNum(r.ratio, 1) + '%</td>' +
       '</tr>';
   }
-  body.innerHTML = html || '<tr><td colspan="5" style="color:var(--fg2)">No trades yet</td></tr>';
+  const finalHtml = html || '<tr><td colspan="7" style="color:var(--fg2)">No trades yet</td></tr>';
+  if (body._lastHtml !== finalHtml) {
+    body._lastHtml = finalHtml;
+    body.innerHTML = finalHtml;
+  }
 }
 
 function viewParams(market) {
