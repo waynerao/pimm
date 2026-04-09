@@ -258,8 +258,14 @@ const ALL_COLUMNS = [
   {key: 'remark',     label: 'Remark',     cls: ''},
 ];
 
-// Load saved column order from localStorage
+// Load saved column order and widths from localStorage
 let columnOrder;
+let columnWidths = {};
+try {
+  const savedWidths = localStorage.getItem('pimm_col_widths');
+  if (savedWidths) columnWidths = JSON.parse(savedWidths);
+} catch(e) {}
+
 try {
   const saved = localStorage.getItem('pimm_col_order');
   if (saved) {
@@ -283,6 +289,10 @@ function buildHeader() {
     const th = document.createElement('th');
     th.textContent = col.label;
     if (col.cls) th.className = col.cls;
+    if (columnWidths[key]) {
+      th.style.width = columnWidths[key];
+      th.style.minWidth = columnWidths[key];
+    }
     th.classList.add('draggable', 'resizable');
     th.draggable = true;
     th.dataset.key = key;
@@ -352,6 +362,10 @@ function startColResize(e, th) {
     th.draggable = true;
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onUp);
+    if (th.dataset.key) {
+      columnWidths[th.dataset.key] = th.style.width;
+      localStorage.setItem('pimm_col_widths', JSON.stringify(columnWidths));
+    }
   }
   document.addEventListener('mousemove', onMove);
   document.addEventListener('mouseup', onUp);
@@ -408,6 +422,17 @@ function cellHtml(r, key) {
       const kind = handle.dataset.resize;
       const isV = handle.classList.contains('resize-v');
       const pair = getPair(handle, kind);
+      
+      let thirdEl = null; 
+      let thirdStartHeight = 0;
+      if (!isV) {
+        var allVertical = [document.getElementById('section-top'),
+                           document.getElementById('section-mid'),
+                           document.getElementById('section-bot')];
+        thirdEl = allVertical.find(s => s !== pair[0] && s !== pair[1]);
+        thirdStartHeight = thirdEl.offsetHeight;
+      }
+      
       startPos = isV ? e.clientX : e.clientY;
       startSizes = isV ? [pair[0].offsetWidth, pair[1].offsetWidth]
                        : [pair[0].offsetHeight, pair[1].offsetHeight];
@@ -425,21 +450,13 @@ function cellHtml(r, key) {
           pair[1].style.flex = (newB / total).toFixed(4);
           pair[0].style.width = ''; pair[1].style.width = '';
         } else {
-          // Vertical section splits: pin both panels to fixed px.
-          // The uninvolved third section keeps its current style
-          // and the container distributes remaining space.
-          pair[0].style.flex = '0 0 ' + newA + 'px';
-          pair[1].style.flex = '0 0 ' + newB + 'px';
-          pair[0].style.height = ''; pair[1].style.height = '';
-          // Ensure the third section fills remaining space
-          var all = [document.getElementById('section-top'),
-                     document.getElementById('section-mid'),
-                     document.getElementById('section-bot')];
-          for (var s of all) {
-            if (s !== pair[0] && s !== pair[1]) {
-              s.style.flex = '1';
-            }
-          }
+          // Vertical splits: use flex-grow derived from px sizes to adapt proportionally
+          pair[0].style.flex = newA.toString();
+          pair[1].style.flex = newB.toString();
+          thirdEl.style.flex = thirdStartHeight.toString();
+          pair[0].style.height = ''; 
+          pair[1].style.height = ''; 
+          thirdEl.style.height = '';
         }
       }
 
