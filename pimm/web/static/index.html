@@ -208,8 +208,9 @@ select { background: var(--bg3); color: var(--fg); border: 1px solid var(--borde
               <table id="trades-table">
                 <thead><tr>
                   <th class="resizable">RIC</th><th class="num resizable">Buy Not.</th><th class="num resizable">Sell Not.</th>
-                  <th class="num resizable">Buy Not. (USD)</th><th class="num resizable">Sell Not. (USD)</th>
                   <th class="num resizable">PnL</th><th class="num resizable">Ratio</th>
+                  <th class="num resizable">Buy Not. (USD)</th><th class="num resizable">Sell Not. (USD)</th>
+                  <th class="num resizable">PnL (USD)</th>
                 </tr></thead>
                 <tbody id="summary-body"></tbody>
               </table>
@@ -843,13 +844,14 @@ function renderTradeSummary(d) {
       '<td>' + r.ric + '</td>' +
       '<td class="num">' + fmtNum(r.buy_notional, 0) + '</td>' +
       '<td class="num">' + fmtNum(r.sell_notional, 0) + '</td>' +
-      '<td class="num">' + fmtNum(r.buy_notional * r.fx_rate, 0) + '</td>' +
-      '<td class="num">' + fmtNum(r.sell_notional * r.fx_rate, 0) + '</td>' +
       '<td class="num ' + pnlClass(r.pnl_local) + '">' + fmtNum(r.pnl_local, 2) + '</td>' +
       '<td class="num">' + fmtNum(r.ratio, 1) + '%</td>' +
+      '<td class="num">' + fmtNum(r.buy_notional * r.fx_rate, 0) + '</td>' +
+      '<td class="num">' + fmtNum(r.sell_notional * r.fx_rate, 0) + '</td>' +
+      '<td class="num ' + pnlClass(r.pnl_local * r.fx_rate) + '">' + fmtNum(r.pnl_local * r.fx_rate, 2) + '</td>' +
       '</tr>';
   }
-  const finalHtml = html || '<tr><td colspan="7" style="color:var(--fg2)">No trades yet</td></tr>';
+  const finalHtml = html || '<tr><td colspan="8" style="color:var(--fg2)">No trades yet</td></tr>';
   if (body._lastHtml !== finalHtml) {
     body._lastHtml = finalHtml;
     body.innerHTML = finalHtml;
