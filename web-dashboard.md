@@ -96,7 +96,7 @@ Notional values are in USD (qty × last_price × fx_rate). Format: `number / num
 
 Tab title: **Delta and Beta**
 
-Displays the latest string from `desktool.get_delta_beta_info()`, queried at `delta_beta_interval` seconds. Empty when no data available. Uses flex layout with internal scroll.
+Displays a multi-line string from `desktool.get_delta_beta_info()`, queried every `delta_beta_interval_s` seconds by the engine's `_delta_beta_loop()` async task. Currently stubbed — shows per-market delta (inventory sum) and beta placeholder. Uses flex layout with internal scroll.
 
 **Filter** (right-aligned in header):
 - **Text** input: regex filter (case-insensitive) — filters lines of the delta/beta text, showing only matching lines.

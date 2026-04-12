@@ -24,6 +24,23 @@ _EVT_SHUTDOWN = "shutdown"
 _EVT_COMMAND = "command"
 
 
+def _get_stub_delta_beta_info(markets):
+    """Stub: replace with desktool.get_delta_beta_info() when wired.
+
+    Returns a multi-line string with per-market delta/beta summary.
+    Real implementation should call desktool to get portfolio-level greeks.
+    """
+    lines = []
+    for name, ms in sorted(markets.items()):
+        if not ms.session_active:
+            lines.append(f"{name:4s}  INACTIVE")
+            continue
+        df = ms.state_mgr.df
+        inv = df["inventory"].sum() if "inventory" in df.columns else 0
+        lines.append(f"{name:4s}  delta={inv:>10,.0f}  beta=--")
+    return "\n".join(lines)
+
+
 class MarketState:
     def __init__(self, name, config, state_mgr, day_type=1):
         self.name, self.config = name, config
@@ -79,6 +96,7 @@ class TradingEngine:
         logger.info(f"Trading engine started ({len(self._markets)} markets)")
         session_task = asyncio.create_task(self._session_monitor())
         snapshot_task = asyncio.create_task(self._snapshot_loop())
+        delta_beta_task = asyncio.create_task(self._delta_beta_loop())
         try:
             while self._running:
                 try:
@@ -95,6 +113,7 @@ class TradingEngine:
         finally:
             session_task.cancel()
             snapshot_task.cancel()
+            delta_beta_task.cancel()
             for ms in self._markets.values():
                 await self._session_end(ms)
             logger.info("Trading engine stopped")
@@ -355,6 +374,17 @@ class TradingEngine:
                     alpha.start(asyncio.get_event_loop())
                 logger.info(f"[{market_name}] Alpha enabled")
             logger.info(f"[{market_name}] Config reloaded")
+
+    async def _delta_beta_loop(self):
+        """Periodically query delta/beta info and update the engine state."""
+        interval = self._pimm_config.delta_beta_interval_s
+        while self._running:
+            await asyncio.sleep(interval)
+            try:
+                info = _get_stub_delta_beta_info(self._markets)
+                self.set_delta_beta_info(info)
+            except Exception:
+                logger.debug("Delta/beta query error", exc_info=True)
 
     async def _snapshot_loop(self):
         while self._running:

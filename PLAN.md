@@ -701,9 +701,11 @@ Standalone E2E test harness that replaces live feeds with randomized data. Simul
 - [x] In-memory log buffer increased to 2000 entries
 - [x] File logging: `main.py` → `logs/pimm_{YYYYMMDD}.log`, `simulator.py` → `logs/sim_{YYYYMMDD_HHMMSS}.log` (DEBUG level)
 - [x] WebSocket logs client IP on connect, disconnect, and commands (e.g. `Command 'start' for [HK] from 192.168.1.50`)
+- [x] Delta/beta periodic loop: `_delta_beta_loop()` queries every `delta_beta_interval_s`, stub shows per-market delta/inventory
 
 ### Future
 - [ ] Wire desktool real subscriptions
+- [ ] Wire `_get_stub_delta_beta_info()` → `desktool.get_delta_beta_info()`
 - [ ] Wire alpha project real subscriptions
 - [ ] Wire HeartbeatMonitor.record_update() from feeds
 - [ ] Wire KDB+ quote injection via dispatch callback

@@ -166,7 +166,9 @@ The engine does **not** route feed events by RIC. On any feed event, the engine 
 
 ### E. Delta/Beta Info (Periodic Query)
 
-`desktool.get_delta_beta_info()` returns a single-line string with portfolio-level delta/beta information. Queried at a configurable interval (`delta_beta_interval_s` in `[pimm]` section, default 5 seconds). This is global (not per-market) and displayed in the web dashboard's info panel.
+`desktool.get_delta_beta_info()` returns a multi-line string with portfolio-level delta/beta information. Queried at a configurable interval (`delta_beta_interval_s` in `[pimm]` section, default 5 seconds). This is global (not per-market) and displayed in the web dashboard's info panel.
+
+Currently stubbed via `_get_stub_delta_beta_info(markets)` in `engine/loop.py` — shows per-market inventory delta summary. The `_delta_beta_loop()` async task runs in the engine alongside `_session_monitor` and `_snapshot_loop`.
 
 ## 6. Core Logic: The 4-Step Sizing Pipeline
 
